@@ -1,12 +1,16 @@
 import os
 
+from dotenv import load_dotenv
+
 from core.agent import Agent
 from core.memory import Memory
 from core.runner import Runner
 from prompts.prompt import universal_agent_prompt
-from tools import TOOLS
-from core.tokenWise import usage_from_response
+from tools.tools import TOOLS
+# from core.tokenWise import usage_from_response
 from data.dataset import load_math_dataset, filter_by_level
+
+load_dotenv()
 
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT")
 MODEL = "gemini-2.0-flash"
@@ -32,11 +36,11 @@ def main():
     runner = Runner(math_agent, memory)
 
     response = runner.run(problem)
-    usage = usage_from_response(response)
+    # usage = usage_from_response(response)
 
     print("Problem:", problem)
     print("Answer:", response.text)
-    print("Token usage:", usage)
+    # print("Token usage:", usage)
     print("Turns in memory:", len(memory.get_history()))
 
 
