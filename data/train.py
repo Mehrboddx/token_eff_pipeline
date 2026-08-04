@@ -1,4 +1,4 @@
-from dataset import load_math_dataset, filter_by_level, train_test
+from data.dataset import load_math_dataset, filter_by_level, train_test
 
 
 dataset = load_math_dataset()

@@ -1,16 +1,23 @@
-from pydantic import BaseModel
 from google import genai
+from google.genai import types
 
-class agent():
-    def __init__(self, name, model, system_prompt, project_id, location = "global", tools = None):
+
+class Agent:
+    def __init__(self, name, model, system_prompt, project, location="global", tools=None):
         self.name = name
         self.model = model
         self.system_prompt = system_prompt
-        self.project_id = project_id
-        self.location = location
-        self.tools = tools
-        self.client = genai.Client(vertexai=True, project_id=self.project_id, location = self.location)
+        self.tools = tools or []
+        self.client = genai.Client(vertexai=True, project=project, location=location)
 
     def invoke(self, query):
-        response  = self.client.generate_content(model = self.model, prompt = self.system_prompt + query)
+        config = types.GenerateContentConfig(
+            system_instruction=self.system_prompt,
+            tools=self.tools,
+        )
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=query,
+            config=config,
+        )
         return response
