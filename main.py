@@ -6,17 +6,15 @@ from core.agent import Agent
 from core.memory import Memory
 from core.runner import Runner
 from prompts.prompt import universal_agent_prompt
-from tools.tools import TOOLS
-# from core.tokenWise import usage_from_response
-from data.dataset import load_math_dataset, filter_by_level
+from tools.tools import PipelineExit, TOOLS
 
 load_dotenv()
 
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT")
-MODEL = "gemini-2.0-flash"
+MODEL = "gemini-2.5-flash"
 
 
-def build_agent():
+def build_agent() -> Agent:
     return Agent(
         name="math-agent",
         model=MODEL,
@@ -26,22 +24,33 @@ def build_agent():
     )
 
 
-def main():
-    dataset = load_math_dataset()
-    dataset = filter_by_level(dataset, ["Level 1"])
-    problem = dataset[0]["problem"]
-
+def main() -> None:
     math_agent = build_agent()
     memory = Memory()
     runner = Runner(math_agent, memory)
 
-    response = runner.run(problem)
-    # usage = usage_from_response(response)
+    print("Math agent ready. Type 'exit' or 'quit' to stop.")
 
-    print("Problem:", problem)
-    print("Answer:", response.text)
-    # print("Token usage:", usage)
-    print("Turns in memory:", len(memory.get_history()))
+    while True:
+        try:
+            query = input("\nQuestion: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nExiting.")
+            break
+
+        if not query:
+            continue
+
+        try:
+            response = runner.run(query)
+            print("Answer:", response.text)
+            print("Turns in memory:", len(memory.get_history()))
+            print("Memory content:", memory.get_history())
+        except PipelineExit:
+            print("Exiting.")
+            break
+        except Exception as exc:
+            print(f"Error while processing the question: {exc}")
 
 
 if __name__ == "__main__":

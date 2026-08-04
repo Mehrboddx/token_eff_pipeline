@@ -7,7 +7,7 @@ class Agent:
     call. Holds no conversation state — that lives in Memory, not here. This
     means the same Agent can be reused across many independent conversations."""
 
-    def __init__(self, name, model, system_prompt, project, location="global", tools=None):
+    def __init__(self, name, model, system_prompt, project, location="us-central1", tools=None):
         self.name = name
         self.model = model
         self.system_prompt = system_prompt
