@@ -1,0 +1,15 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Same torch/torchvision install as the notebook's first cell (cu126 wheels).
+# The container doesn't need the NVIDIA driver baked in — Vertex AI's GPU
+# VMs provide that at runtime; these wheels bundle the CUDA runtime libs.
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu126
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY cpc_compressor.py run_longbench.py ./
+
+ENTRYPOINT ["python", "run_longbench.py"]

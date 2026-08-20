@@ -1,0 +1,9 @@
+# torch/torchvision are installed separately in the Dockerfile from the
+# cu126 wheel index (same as the notebook's install cell) since they're not
+# on PyPI in that build.
+pysbd
+torchao
+peft
+transformers
+datasets<3.0.0
+google-cloud-storage
