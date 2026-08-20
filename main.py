@@ -1,10 +1,14 @@
 import os
+import logging
+from pathlib import Path
+from uuid import uuid4
 
 from dotenv import load_dotenv
 
 from core.agent import Agent
 from core.memory import Memory
 from core.runner import Runner
+from core.tokenWise import TokenWise
 from prompts.prompt import universal_agent_prompt
 from tools.tools import PipelineExit, TOOLS
 
@@ -12,45 +16,107 @@ load_dotenv()
 
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT")
 MODEL = "gemini-2.5-flash"
+LOGS_DIR = Path("logs")
 
 
-def build_agent() -> Agent:
+def build_context_logger() -> tuple[logging.Logger, Path, str]:
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    session_code = uuid4().hex[:8]
+    context_log_path = LOGS_DIR / f"model_context_{session_code}.log"
+
+    logger = logging.getLogger(f"model_context_{session_code}")
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+    logger.propagate = False
+
+    handler = logging.FileHandler(context_log_path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
+    logger.addHandler(handler)
+
+    logger.info("[Session start] code=%s", session_code)
+
+    return logger, context_log_path, session_code
+
+
+def build_context_monitor(logger: logging.Logger):
+    def log_context(history, context_meta=None):
+        turn_number = (context_meta or {}).get("turn")
+        pass_number = (context_meta or {}).get("pass")
+        mode = (context_meta or {}).get("mode")
+        logger.info("[Turn %s | pass %s start] mode=%s", turn_number, pass_number, mode)
+        for index, item in enumerate(history, start=1):
+            logger.info("%s. %s (%s): %s", index, item["role"], item.get("kind"), item["text"])
+        logger.info("[Turn %s | pass %s end]", turn_number, pass_number)
+
+    return log_context
+
+
+def write_turn_separator(logger: logging.Logger) -> None:
+    for handler in logger.handlers:
+        if hasattr(handler, "stream") and handler.stream is not None:
+            handler.stream.write("\n")
+            handler.flush()
+
+
+def close_context_logger(logger: logging.Logger, session_code: str) -> None:
+    logger.info("[Session end] code=%s", session_code)
+    for handler in list(logger.handlers):
+        handler.flush()
+        handler.close()
+        logger.removeHandler(handler)
+
+
+def build_agent(context_monitor) -> Agent:
     return Agent(
         name="math-agent",
         model=MODEL,
         system_prompt=universal_agent_prompt,
         project=PROJECT_ID,
         tools=TOOLS,
+        context_monitor=context_monitor,
     )
 
 
 def main() -> None:
-    math_agent = build_agent()
+    logger, context_log_path, session_code = build_context_logger()
+    math_agent = build_agent(build_context_monitor(logger))
     memory = Memory()
-    runner = Runner(math_agent, memory)
+    tokenwise = TokenWise()
+    runner = Runner(math_agent, memory, tokenwise=tokenwise, compression_sentence_threshold=2, compression_token_budget=50)
 
     print("Math agent ready. Type 'exit' or 'quit' to stop.")
+    print(f"Session code: {session_code}")
+    print(f"Model context will be logged to {context_log_path}")
 
-    while True:
-        try:
-            query = input("\nQuestion: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nExiting.")
-            break
+    try:
+        turn_index = 0
+        while True:
+            try:
+                query = input("\nQuestion: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nExiting.")
+                break
 
-        if not query:
-            continue
+            if not query:
+                continue
 
-        try:
-            response = runner.run(query)
-            print("Answer:", response.text)
-            print("Turns in memory:", len(memory.get_history()))
-            print("Memory content:", memory.get_history())
-        except PipelineExit:
-            print("Exiting.")
-            break
-        except Exception as exc:
-            print(f"Error while processing the question: {exc}")
+            try:
+                turn_index += 1
+                runner.current_turn = turn_index
+                logger.info("[Turn %s start]", turn_index)
+                response = runner.run(query)
+                print("Answer:", response.text)
+                print("Turns in memory:", len(memory.get_history()))
+                print("Memory content:", memory.get_history())
+                logger.info("[Turn %s end]", turn_index)
+                write_turn_separator(logger)
+            except PipelineExit:
+                print("Exiting.")
+                break
+            except Exception as exc:
+                print(f"Error while processing the question: {exc}")
+    finally:
+        close_context_logger(logger, session_code)
 
 
 if __name__ == "__main__":
