@@ -93,6 +93,7 @@ def main() -> None:
     memory = Memory()
     tokenwise = build_tokenwise()
     runner = Runner(math_agent, memory, tokenwise=tokenwise, compression_sentence_threshold=2, compression_token_budget=50)
+    logger.info("[Compressor] backend=%s", COMPRESSOR_BACKEND)
 
     print("Math agent ready. Type 'exit' or 'quit' to stop.")
     print(f"Session code: {session_code}")
