@@ -6,6 +6,7 @@ from uuid import uuid4
 from dotenv import load_dotenv
 
 from core.agent import Agent
+from core.geminiCompressor import GeminiCompressor
 from core.memory import Memory
 from core.runner import Runner
 from core.tokenWise import TokenWise
@@ -15,7 +16,9 @@ from tools.tools import PipelineExit, TOOLS
 load_dotenv()
 
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT")
+LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
 MODEL = "gemini-2.5-flash"
+COMPRESSOR_BACKEND = os.environ.get("COMPRESSOR_BACKEND", "local")  # "local" or "gemini"
 LOGS_DIR = Path("logs")
 
 
@@ -77,15 +80,23 @@ def build_agent(context_monitor) -> Agent:
     )
 
 
+def build_tokenwise() -> TokenWise:
+    if COMPRESSOR_BACKEND == "gemini":
+        return TokenWise(model=GeminiCompressor(project=PROJECT_ID, location=LOCATION, model=MODEL))
+
+    return TokenWise()
+
+
 def main() -> None:
     logger, context_log_path, session_code = build_context_logger()
     math_agent = build_agent(build_context_monitor(logger))
     memory = Memory()
-    tokenwise = TokenWise()
+    tokenwise = build_tokenwise()
     runner = Runner(math_agent, memory, tokenwise=tokenwise, compression_sentence_threshold=2, compression_token_budget=50)
 
     print("Math agent ready. Type 'exit' or 'quit' to stop.")
     print(f"Session code: {session_code}")
+    print(f"Compressor backend: {COMPRESSOR_BACKEND}")
     print(f"Model context will be logged to {context_log_path}")
 
     try:
