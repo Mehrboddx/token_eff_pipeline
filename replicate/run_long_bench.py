@@ -63,9 +63,11 @@ def parse_args():
     )
     p.add_argument(
         "--output_dir",
-        default="/tmp/compressed_longbench",
+        default=None,
         help="Local staging directory (also the final location if "
-             "--output_gcs_uri is not set).",
+             "--output_gcs_uri is not set). Defaults to 'output' for "
+             "--compressor=cpc and 'output_gemini_compressor' for "
+             "--compressor=gemini, so the two don't overwrite each other.",
     )
     p.add_argument(
         "--target_tokens",
@@ -114,7 +116,10 @@ def parse_args():
         "--location",
         default=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"),
     )
-    return p.parse_args()
+    args = p.parse_args()
+    if args.output_dir is None:
+        args.output_dir = "output_gemini_compressor" if args.compressor == "gemini" else "output"
+    return args
 
 
 def build_compressor(args):
