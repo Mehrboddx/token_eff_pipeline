@@ -7,3 +7,5 @@ peft
 transformers
 datasets<3.0.0
 google-cloud-storage
+google-genai
+python-dotenv

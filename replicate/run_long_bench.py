@@ -26,8 +26,9 @@ import tempfile
 from pathlib import Path
 
 from datasets import load_dataset
+from dotenv import load_dotenv
 
-from cpc_compressor import CPCCompressor
+load_dotenv()
 
 ALL_SUBSETS = [
     "narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh", "hotpotqa",
@@ -89,13 +90,48 @@ def parse_args():
         default=6144,
         help="Per-chunk token budget for the compressor's forward pass. Lower "
              "this on GPUs with limited VRAM (more, smaller chunks; slower "
-             "but still correct).",
+             "but still correct). Only applies to --compressor=cpc.",
+    )
+    p.add_argument(
+        "--compressor",
+        choices=["cpc", "gemini"],
+        default=os.environ.get("COMPRESSOR", "cpc"),
+        help="'cpc' runs the local CPC embedding model (default); 'gemini' "
+             "calls a hosted Gemini model over Vertex AI to do the "
+             "compression instead.",
+    )
+    p.add_argument(
+        "--gemini_model",
+        default=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
+        help="Model id to use when --compressor=gemini.",
+    )
+    p.add_argument(
+        "--project",
+        default=os.environ.get("GOOGLE_CLOUD_PROJECT"),
+        help="GCP project for Vertex AI (only needed for --compressor=gemini).",
+    )
+    p.add_argument(
+        "--location",
+        default=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"),
     )
     return p.parse_args()
 
 
+def build_compressor(args):
+    if args.compressor == "gemini":
+        from gemini_compressor import GeminiCompressor
+
+        return GeminiCompressor(project=args.project, location=args.location, model=args.gemini_model)
+
+    from cpc_compressor import CPCCompressor
+
+    return CPCCompressor(max_seq_length=args.max_seq_length)
+
+
 def main():
     args = parse_args()
+    print(f"Compressor: {args.compressor}"
+          + (f" ({args.gemini_model})" if args.compressor == "gemini" else ""))
     subsets = [s.strip() for s in args.subsets.split(",") if s.strip()]
 
     output_dir = Path(args.output_dir)
@@ -121,7 +157,7 @@ def main():
         }
         print(f"  found {len(existing_blobs)} existing output files.")
 
-    compressor = CPCCompressor(max_seq_length=args.max_seq_length)
+    compressor = build_compressor(args)
 
     for subset in subsets:
         dataset = load_dataset("THUDM/LongBench", subset, split="test", trust_remote_code=True)
