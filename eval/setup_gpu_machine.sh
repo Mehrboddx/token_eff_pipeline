@@ -23,7 +23,20 @@ nvidia-smi --query-gpu=index,name,memory.total,memory.used --format=csv
 echo
 echo "-- Setting up Python venv (.venv)..."
 if [[ ! -d .venv ]]; then
-  python3 -m venv .venv
+  if ! python3 -m venv .venv 2>/tmp/venv_err.$$; then
+    # Common on shared/no-sudo machines: the stdlib venv module needs the
+    # system's python3-venv package (Debian/Ubuntu) or a working ensurepip,
+    # neither of which a non-root user can install. The virtualenv PyPI
+    # package bundles its own bootstrapping instead, so it works without
+    # sudo -- installed to the user site-packages, not system-wide.
+    cat /tmp/venv_err.$$ >&2
+    rm -f /tmp/venv_err.$$
+    echo "python3 -m venv failed (likely missing python3-venv, and you may not have sudo)." >&2
+    echo "Falling back to the 'virtualenv' package instead (pip install --user)..." >&2
+    pip install --user virtualenv || python3 -m pip install --user virtualenv
+    python3 -m virtualenv .venv
+  fi
+  rm -f /tmp/venv_err.$$
 fi
 source .venv/bin/activate
 pip install --upgrade pip
