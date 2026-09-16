@@ -361,11 +361,15 @@ class CPCCompressor:
             # (context is limited to this chunk, not the whole document)
             chunk_token_embeddings, chunk_offsets = self._embed_with_spans(chunk_text)
 
-            if len(chunks) > 1:
-                # This loop is one full GPU forward pass per chunk and can
-                # run for several minutes on a large haystack (60-90+
-                # chunks isn't unusual) with otherwise zero output -- prior
-                # to this, that silence repeatedly got mistaken for a hang.
+            # This loop is one full GPU forward pass per chunk and can run
+            # for several minutes on a large haystack (60-90+ chunks isn't
+            # unusual) with otherwise zero output -- prior to this, that
+            # silence repeatedly got mistaken for a hang. Printed every 10
+            # chunks (not every one) to keep the output volume down over a
+            # full run -- 500 questions x ~80 chunks each adds up fast
+            # otherwise, and this runs inside a remote desktop session
+            # where excess terminal output isn't free.
+            if len(chunks) > 1 and (chunk_index % 10 == 0 or chunk_index == len(chunks)):
                 elapsed = time.monotonic() - chunk_start_time
                 rate = elapsed / chunk_index
                 remaining = rate * (len(chunks) - chunk_index)
