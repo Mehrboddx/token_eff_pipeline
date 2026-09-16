@@ -11,6 +11,15 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# python:3.11-slim has no C compiler. Triton (which PyTorch's "sdpa"
+# attention backend can JIT-compile kernels through, depending on the
+# GPU/driver combo it lands on) needs one at runtime -- without it every
+# forward pass fails with "Failed to find C compiler", which fails
+# identically on every single question since it's the very first kernel
+# the model tries to run.
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
 # Same torch/torchvision install as replicate/dockerfile's (cu126 wheels;
 # the NVIDIA driver itself comes from Vertex AI's GPU VM at runtime, not
 # from this image).
