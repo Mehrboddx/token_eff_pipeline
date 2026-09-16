@@ -21,6 +21,22 @@ fi
 nvidia-smi --query-gpu=index,name,memory.total,memory.used --format=csv
 
 echo
+echo "-- Checking for pip..."
+if ! python3 -m pip --version >/dev/null 2>&1; then
+  # Bare-bones/no-sudo machines often lack ensurepip entirely (the same
+  # missing system package -- python3-venv on Debian/Ubuntu -- that also
+  # breaks the stdlib venv module below). get-pip.py bootstraps pip
+  # directly from PyPA's installer, no system package or root needed.
+  echo "No pip found. Bootstrapping via get-pip.py (installs to --user)..." >&2
+  TMP_GET_PIP="$(mktemp -t get-pip-XXXXXX.py)"
+  (command -v curl >/dev/null 2>&1 && curl -sSL -o "$TMP_GET_PIP" https://bootstrap.pypa.io/get-pip.py) \
+    || wget -qO "$TMP_GET_PIP" https://bootstrap.pypa.io/get-pip.py
+  python3 "$TMP_GET_PIP" --user
+  rm -f "$TMP_GET_PIP"
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+
+echo
 echo "-- Setting up Python venv (.venv)..."
 if [[ ! -d .venv ]]; then
   if ! python3 -m venv .venv 2>/tmp/venv_err.$$; then
@@ -33,7 +49,7 @@ if [[ ! -d .venv ]]; then
     rm -f /tmp/venv_err.$$
     echo "python3 -m venv failed (likely missing python3-venv, and you may not have sudo)." >&2
     echo "Falling back to the 'virtualenv' package instead (pip install --user)..." >&2
-    pip install --user virtualenv || python3 -m pip install --user virtualenv
+    python3 -m pip install --user virtualenv
     python3 -m virtualenv .venv
   fi
   rm -f /tmp/venv_err.$$
