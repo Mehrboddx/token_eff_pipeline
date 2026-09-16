@@ -57,6 +57,8 @@ Oversized sentences:
 """
 
 import math
+import sys
+import time
 from dataclasses import dataclass
 
 import pysbd
@@ -353,10 +355,25 @@ class CPCCompressor:
             raise ValueError("Could not embed question (empty after tokenization?).")
 
         scored: list[ScoredSentence] = []
-        for chunk_text, chunk_start, chunk_sentences in chunks:
+        chunk_start_time = time.monotonic()
+        for chunk_index, (chunk_text, chunk_start, chunk_sentences) in enumerate(chunks, start=1):
             # one forward pass per chunk -> context-aware token embeddings
             # (context is limited to this chunk, not the whole document)
             chunk_token_embeddings, chunk_offsets = self._embed_with_spans(chunk_text)
+
+            if len(chunks) > 1:
+                # This loop is one full GPU forward pass per chunk and can
+                # run for several minutes on a large haystack (60-90+
+                # chunks isn't unusual) with otherwise zero output -- prior
+                # to this, that silence repeatedly got mistaken for a hang.
+                elapsed = time.monotonic() - chunk_start_time
+                rate = elapsed / chunk_index
+                remaining = rate * (len(chunks) - chunk_index)
+                print(
+                    f"  chunk {chunk_index}/{len(chunks)} "
+                    f"({elapsed:.0f}s elapsed, ~{remaining:.0f}s remaining)",
+                    file=sys.stderr, flush=True,
+                )
 
             for sent_text, start, end in chunk_sentences:
                 local_start = start - chunk_start
