@@ -198,6 +198,73 @@ def build_tokenwise(compressor: str, cpc_max_seq_length: int = 1536, cpc_preset:
 NEEDS_QUESTION_DATE = {"temporal-reasoning", "knowledge-update"}
 
 
+def _question_with_date_tag(item):
+    """Same reasoning as seed_memory_from_haystack's date tags: only add
+    this for question types that actually need "now" to reason about
+    elapsed time or the most recent version of a fact -- the query is also
+    what TokenWise scores sentences against, so adding "today"/"date" to
+    every question would give every sentence that happens to mention a
+    date a free relevance boost on completely unrelated questions."""
+    question = item["question"]
+    if item.get("question_date") and item.get("question_type") in NEEDS_QUESTION_DATE:
+        question = f"(Today's date is {item['question_date']}.) {question}"
+    return question
+
+
+def _compressed_context_from_described(described, mode):
+    if mode == "compressed_history" and described:
+        first = described[0]
+        if first.get("kind") == "compressed_context":
+            return first.get("text")
+    return None
+
+
+def compress_question(item, tokenwise, compression_sentence_threshold, compression_token_budget, recent_turns):
+    """The compression half of answer_question, split out so it can run
+    without ever touching the answering model -- see --stage compress.
+    Lets compression (GPU-bound, e.g. Mistral) run on one machine, and
+    answering (one Gemini API call, no GPU) run on another that has
+    working Vertex AI credentials but no local GPU at all.
+
+    Returns (described_history, mode, question) -- described_history is
+    Agent.describe_history()'s JSON-serializable [{role, kind, text}, ...]
+    form (reused rather than inventing a second serialization), mode is
+    "compressed_history"/"full_history", and question is the actual
+    (possibly date-tagged) text used, for logging."""
+    memory = seed_memory_from_haystack(item)
+    runner = Runner(
+        None, memory, tokenwise=tokenwise,
+        compression_sentence_threshold=compression_sentence_threshold,
+        compression_token_budget=compression_token_budget,
+        recent_turns=recent_turns,
+    )
+    question = _question_with_date_tag(item)
+
+    previous_sentences = memory.get_sentences()
+    memory.add_user_message(question)
+    if runner.tokenwise is not None:
+        runner.tokenwise.set_sentences(memory.get_sentences())
+    history, mode = runner._build_history(question, previous_sentences)
+
+    return Agent.describe_history(history), mode, question
+
+
+def answer_from_compressed(agent, described_history):
+    """The answering half of answer_question, split out so it can run on a
+    different machine than the one that produced described_history (see
+    --stage answer) -- one Gemini call, no compressor, no GPU. Rebuilds
+    real Content objects from the described (role/kind/text) form that
+    compress_question logged; the question itself is already the last
+    entry (compress_question adds it to Memory before building history),
+    so nothing else needs to be passed in."""
+    history = [
+        types.Content(role=entry["role"], parts=[types.Part.from_text(text=entry["text"])])
+        for entry in described_history
+    ]
+    response = agent.call_model(history)
+    return response.text or ""
+
+
 def answer_question(agent, item, tokenwise, compression_sentence_threshold, compression_token_budget, recent_turns):
     memory = seed_memory_from_haystack(item)
     runner = Runner(
@@ -208,15 +275,7 @@ def answer_question(agent, item, tokenwise, compression_sentence_threshold, comp
         compression_token_budget=compression_token_budget,
         recent_turns=recent_turns,
     )
-    question = item["question"]
-    # Same reasoning as seed_memory_from_haystack's date tags: only add this
-    # for question types that actually need "now" to reason about elapsed
-    # time or the most recent version of a fact — the query is also what
-    # TokenWise scores sentences against, so adding "today"/"date" to every
-    # question would give every sentence that happens to mention a date a
-    # free relevance boost on completely unrelated questions.
-    if item.get("question_date") and item.get("question_type") in NEEDS_QUESTION_DATE:
-        question = f"(Today's date is {item['question_date']}.) {question}"
+    question = _question_with_date_tag(item)
 
     # Capture what the compressor actually produced for this question, via
     # the same Agent.context_monitor hook main.py's REPL uses for its own
@@ -239,12 +298,7 @@ def answer_question(agent, item, tokenwise, compression_sentence_threshold, comp
     finally:
         agent.context_monitor = None
 
-    compressed_context = None
-    if captured.get("mode") == "compressed_history" and captured.get("history"):
-        first_item = captured["history"][0]
-        if first_item.get("kind") == "compressed_context":
-            compressed_context = first_item["text"]
-
+    compressed_context = _compressed_context_from_described(captured.get("history"), captured.get("mode"))
     return response.text or "", captured.get("mode"), compressed_context
 
 
@@ -329,6 +383,122 @@ def _next_run_number(log_dir, gcs_uri=None):
     return max(existing, default=0) + 1
 
 
+def run_answer_stage(args, log_dir):
+    """--stage answer: read a --stage compress log's described histories
+    and do just the Gemini call + grading for each -- no GPU, no
+    compressor construction, needs only Vertex AI credentials. Mirrors the
+    run-numbering/resume/GCS-mirroring shape of the main compress/full
+    loop below, but iterates compress-stage rows instead of dataset items,
+    since there's no dataset load or compressor to build here at all."""
+    existing_results = []
+    if args.resume is not None:
+        run_number = args.resume
+        log_path = log_dir / f"eval_longmemeval_run{run_number:04d}.jsonl"
+        if args.log_gcs_uri and not log_path.exists():
+            blob = _gcs_blob(args.log_gcs_uri, log_path.name)
+            if blob.exists():
+                print(f"Local log missing; downloading from {args.log_gcs_uri}/{log_path.name}")
+                blob.download_to_filename(str(log_path))
+        run_start, existing_results = load_run_log(log_path)
+        if run_start is None:
+            raise SystemExit(f"--resume {run_number}: {log_path} has no run_start record to resume from")
+        # --from-log only needs to be passed explicitly for a fresh answer
+        # run -- a resumed one already has it recorded in its own
+        # run_start, from when it was first started.
+        args.from_log = run_start.get("from_log", args.from_log)
+        print(f"Resuming answer run {run_number} ({log_path}): "
+              f"{len(existing_results)} results already logged")
+    else:
+        run_number = _next_run_number(log_dir, gcs_uri=args.log_gcs_uri)
+        log_path = log_dir / f"eval_longmemeval_run{run_number:04d}.jsonl"
+        print(f"Logging full per-question results to {log_path}")
+
+    if not args.from_log:
+        raise SystemExit("--stage answer requires --from-log <path to a --stage compress JSONL log>")
+
+    from_log_path = Path(args.from_log)
+    _, compress_rows = load_run_log(from_log_path)
+    if not compress_rows:
+        raise SystemExit(f"{from_log_path} has no compress-stage result rows to answer")
+    print(f"Loaded {len(compress_rows)} compressed questions from {from_log_path}")
+
+    agent = build_agent(project=args.project, location=args.location)
+    log_gcs_blob = _gcs_blob(args.log_gcs_uri, log_path.name) if args.log_gcs_uri else None
+
+    already_done = {(row["config"], row["question_id"]) for row in existing_results}
+    results = {}
+    for row in existing_results:
+        results.setdefault(row["config"], []).append(row)
+
+    with log_path.open("a", encoding="utf-8") as log_file:
+        def log(record):
+            log_file.write(json.dumps({"timestamp": datetime.now().isoformat(), **record}) + "\n")
+            log_file.flush()
+            if log_gcs_blob is not None:
+                log_gcs_blob.upload_from_filename(str(log_path))
+
+        log({
+            "event": "run_resume" if args.resume is not None else "run_start",
+            "run": run_number,
+            "stage": "answer",
+            "from_log": str(from_log_path),
+            "project": args.project,
+            "location": args.location,
+        })
+
+        for index, crow in enumerate(compress_rows, start=1):
+            key = (crow["config"], crow["question_id"])
+            if key in already_done:
+                continue
+
+            print(f"\n[{index}/{len(compress_rows)}] {crow['question_id']} ({crow['question_type']}): "
+                  f"{crow['question'][:120]}")
+            try:
+                predicted = answer_from_compressed(agent, crow["history"])
+            except Exception as exc:
+                predicted = f"[ERROR: {exc}]"
+
+            correct = grade(predicted, crow["reference"])
+            compressed_context = _compressed_context_from_described(crow.get("history"), crow.get("compression_mode"))
+            row = {
+                "config": crow["config"],
+                "question_id": crow["question_id"],
+                "question_type": crow["question_type"],
+                "question": crow["question"],
+                "reference": crow["reference"],
+                "predicted": predicted,
+                "correct": correct,
+                "compression_mode": crow.get("compression_mode"),
+                "compressed_context": compressed_context,
+            }
+            results.setdefault(row["config"], []).append(row)
+            log({"event": "result", **row})
+
+            status = "PASS" if correct else "FAIL"
+            print(f"  [{row['config']}] {status} | ref: {crow['reference']!r} | got: {predicted[:150]!r}")
+
+        print("\n=== Summary ===")
+        summary = {}
+        for name, rows in results.items():
+            summarize(name, rows)
+            total = len(rows)
+            passed = sum(row["correct"] for row in rows)
+            by_type = {}
+            for row in rows:
+                by_type.setdefault(row["question_type"], []).append(row["correct"])
+            summary[name] = {
+                "total": total,
+                "passed": passed,
+                "by_type": {
+                    question_type: {"total": len(outcomes), "passed": sum(outcomes)}
+                    for question_type, outcomes in by_type.items()
+                },
+            }
+        log({"event": "run_end", "summary": summary})
+
+    print(f"\nFull results (including untruncated predictions) saved to {log_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--limit", type=int, default=25, help="Number of questions to sample.")
@@ -402,10 +572,56 @@ def main():
              "doesn't survive a restart or preemption -- without this, --resume has nothing to "
              "resume from if the job dies. Requires google-cloud-storage.",
     )
+    parser.add_argument(
+        "--stage",
+        choices=["full", "compress", "answer"],
+        default="full",
+        help="'full' (default): compress and answer in one pass. 'compress': only run the "
+             "compressor and log the resulting context -- no Gemini call, no GCP credentials "
+             "needed at all -- for compressing (e.g. --compressor cpc --cpc-preset mistral) on "
+             "a GPU machine that doesn't have Vertex AI access. 'answer': read a --stage "
+             "compress log via --from-log and only do the Gemini call + grading -- no GPU or "
+             "compressor needed -- for finishing the eval on a machine that does have Vertex AI "
+             "access. Left at the default with no --project/GOOGLE_CLOUD_PROJECT set, this "
+             "automatically falls back to 'compress': Gemini isn't reachable anyway, so there's "
+             "no reason to fail loudly instead of just doing the half that still works.",
+    )
+    parser.add_argument(
+        "--from-log", default=None, metavar="PATH",
+        help="A --stage compress JSONL log to read compressed histories from. Required for "
+             "--stage answer.",
+    )
     args = parser.parse_args()
 
     log_dir = Path(args.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.resume is not None:
+        # A resumed run must continue in whatever stage it originally
+        # started in, regardless of what --stage defaults to or whether
+        # --project happens to be set this time -- peek at its own
+        # run_start before deciding how to dispatch below.
+        peek_path = log_dir / f"eval_longmemeval_run{args.resume:04d}.jsonl"
+        if not peek_path.exists() and args.log_gcs_uri:
+            blob = _gcs_blob(args.log_gcs_uri, peek_path.name)
+            if blob.exists():
+                blob.download_to_filename(str(peek_path))
+        if peek_path.exists():
+            peek_start, _ = load_run_log(peek_path)
+            if peek_start and peek_start.get("stage"):
+                args.stage = peek_start["stage"]
+    elif args.stage == "full" and not args.project:
+        print(
+            "No --project (and no GOOGLE_CLOUD_PROJECT env var) -- Gemini isn't reachable, so "
+            "only running the compressor. Pass --project (or set GOOGLE_CLOUD_PROJECT) to also "
+            "answer in one pass, or answer this run later on a machine that has it with:\n"
+            "  python -m eval.longmemeval --stage answer --from-log <this run's log path> --project <project>\n"
+        )
+        args.stage = "compress"
+
+    if args.stage == "answer":
+        run_answer_stage(args, log_dir)
+        return
 
     existing_results = []
     if args.resume is not None:
@@ -451,7 +667,10 @@ def main():
     items = load_longmemeval(limit=args.limit, seed=args.seed, question_types=question_types)
     print(f"Loaded {len(items)} questions from {DATASET_REPO}:{DATASET_FILE}")
 
-    agent = build_agent(project=args.project, location=args.location)
+    # --stage compress never calls the model, so it never needs Vertex AI
+    # credentials -- skip building the Agent entirely rather than fail on a
+    # missing/invalid project.
+    agent = build_agent(project=args.project, location=args.location) if args.stage != "compress" else None
 
     tokenwise = build_tokenwise(
         args.compressor, cpc_max_seq_length=args.cpc_max_seq_length, cpc_preset=args.cpc_preset,
@@ -479,6 +698,7 @@ def main():
         log({
             "event": "run_resume" if args.resume is not None else "run_start",
             "run": run_number,
+            "stage": args.stage,
             "dataset": f"{DATASET_REPO}:{DATASET_FILE}",
             "limit": args.limit,
             "seed": args.seed,
@@ -502,6 +722,28 @@ def main():
 
             print(f"\n[{index}/{len(items)}] {item['question_id']} ({item['question_type']}): {item['question'][:120]}")
             for name, tokenwise in pending_configs:
+                if args.stage == "compress":
+                    try:
+                        described, mode, question = compress_question(
+                            item, tokenwise, args.sentence_threshold, args.token_budget, args.recent_turns,
+                        )
+                    except Exception as exc:
+                        described, mode, question = [], None, f"[ERROR: {exc}]"
+
+                    row = {
+                        "config": name,
+                        "question_id": item["question_id"],
+                        "question_type": item["question_type"],
+                        "question": question,
+                        "reference": item["answer"],
+                        "compression_mode": mode,
+                        "history": described,
+                    }
+                    results[name].append(row)
+                    log({"event": "result", **row})
+                    print(f"  [{name}] compressed (mode={mode})")
+                    continue
+
                 try:
                     predicted, compression_mode, compressed_context = answer_question(
                         agent, item, tokenwise,
@@ -529,23 +771,31 @@ def main():
                 print(f"  [{name}] {status} | ref: {item['answer']!r} | got: {predicted[:150]!r}")
 
         print("\n=== Summary ===")
-        summary = {}
-        for name, rows in results.items():
-            summarize(name, rows)
-            total = len(rows)
-            passed = sum(row["correct"] for row in rows)
-            by_type = {}
-            for row in rows:
-                by_type.setdefault(row["question_type"], []).append(row["correct"])
-            summary[name] = {
-                "total": total,
-                "passed": passed,
-                "by_type": {
-                    question_type: {"total": len(outcomes), "passed": sum(outcomes)}
-                    for question_type, outcomes in by_type.items()
-                },
-            }
-        log({"event": "run_end", "summary": summary})
+        if args.stage == "compress":
+            compressed_counts = {name: len(rows) for name, rows in results.items()}
+            for name, count in compressed_counts.items():
+                print(f"{name}: compressed {count} questions")
+            print(f"\nAnswer these later (needs Vertex AI credentials, no GPU) with:")
+            print(f"  python -m eval.longmemeval --stage answer --from-log {log_path} --project <project>")
+            log({"event": "run_end", "compressed": compressed_counts})
+        else:
+            summary = {}
+            for name, rows in results.items():
+                summarize(name, rows)
+                total = len(rows)
+                passed = sum(row["correct"] for row in rows)
+                by_type = {}
+                for row in rows:
+                    by_type.setdefault(row["question_type"], []).append(row["correct"])
+                summary[name] = {
+                    "total": total,
+                    "passed": passed,
+                    "by_type": {
+                        question_type: {"total": len(outcomes), "passed": sum(outcomes)}
+                        for question_type, outcomes in by_type.items()
+                    },
+                }
+            log({"event": "run_end", "summary": summary})
 
     print(f"\nFull results (including untruncated predictions) saved to {log_path}")
 
