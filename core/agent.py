@@ -57,7 +57,7 @@ class Agent:
             return "tool"
 
         text = Agent._content_text(content)
-        if text.startswith("Relevant user context:\n") or text.startswith("Relevant response context:\n"):
+        if text.startswith("Relevant earlier context:\n"):
             return "compressed_context"
 
         return getattr(content, "role", None)
@@ -95,8 +95,15 @@ class Agent:
 
     def run_tool(self, function_call):
         """Execute a tool the model asked for and package up the result."""
-        tool = self.tools[function_call.name]
-        result = tool.run(**function_call.args)
+        tool = self.tools.get(function_call.name)
+        # A model can ask for a tool name that isn't declared — e.g. Gemini
+        # emitting a function_call even when no tools were configured at
+        # all. Report it back as a tool result instead of crashing the
+        # whole run; the model can recover from that on its next turn.
+        if tool is None:
+            result = f"error: unknown tool '{function_call.name}'"
+        else:
+            result = tool.run(**function_call.args)
         return types.Part.from_function_response(
             name=function_call.name,
             response={"result": result},

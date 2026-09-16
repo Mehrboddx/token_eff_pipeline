@@ -1,0 +1,10 @@
+# torch/torchvision are installed separately in Dockerfile.eval from the
+# cu126 wheel index (same as replicate/dockerfile), since they're not on
+# PyPI in that build.
+pysbd
+peft
+transformers
+google-genai
+google-cloud-storage
+huggingface_hub
+python-dotenv

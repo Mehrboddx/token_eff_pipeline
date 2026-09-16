@@ -29,7 +29,7 @@ class GeminiCompressor:
         self,
         project: str | None = None,
         location: str = "us-central1",
-        model: str = "gemini-2.5-flash",
+        model: str = "gemini-3.5-flash",
         client: genai.Client | None = None,
     ) -> None:
         self.model = model

@@ -1,0 +1,30 @@
+# Runs eval/longmemeval.py on a Vertex AI GPU instance -- for CPC compressor
+# presets (especially --cpc-preset mistral, a full 7B model) that need far
+# more VRAM than a typical laptop GPU has.
+#
+# Build context MUST be the project root (this file lives there, not under
+# eval/), since eval/longmemeval.py imports core/, prompts/, and
+# replicate/cpc_compressor.py. See eval/deploy.sh, which builds this
+# correctly -- don't `docker build` from inside eval/.
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Same torch/torchvision install as replicate/dockerfile's (cu126 wheels;
+# the NVIDIA driver itself comes from Vertex AI's GPU VM at runtime, not
+# from this image).
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu126
+
+COPY eval/requirements.txt ./eval-requirements.txt
+RUN pip install --no-cache-dir -r eval-requirements.txt
+
+# Only what eval/longmemeval.py actually imports -- not the rest of
+# replicate/ (run_long_bench.py, gemini_compressor.py, etc. are unrelated
+# to this eval and would just pull in unused dependencies).
+COPY core/ ./core/
+COPY prompts/ ./prompts/
+COPY eval/ ./eval/
+COPY replicate/cpc_compressor.py ./replicate/cpc_compressor.py
+
+ENTRYPOINT ["python", "-m", "eval.longmemeval"]

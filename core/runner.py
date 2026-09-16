@@ -1,5 +1,3 @@
-import re
-
 from google.genai import types
 
 
@@ -9,14 +7,21 @@ class Runner:
     answers directly or the step limit is hit. Neither the agent nor the
     memory knows about looping — that logic lives only here."""
 
+    ROLE_LABELS = {"user": "User", "model": "Assistant", "tool": "Tool"}
+
     def __init__(
         self,
         agent,
         memory,
         tokenwise=None,
         max_steps=5,
-        compression_sentence_threshold=24,
-        compression_token_budget=256,
+        # Validated against LongMemEval (eval/longmemeval.py): haystacks run
+        # tens of thousands of words, and these are the values that
+        # actually preserved answer-bearing content through compression —
+        # see that file's --token-budget/--sentence-threshold/--recent-turns
+        # defaults, which mirror these.
+        compression_sentence_threshold=20,
+        compression_token_budget=500,
         recent_turns=4,
     ):
         self.agent = agent
@@ -33,91 +38,51 @@ class Runner:
         if self.tokenwise is None or len(previous_sentences) <= self.compression_sentence_threshold:
             return history, "full_history"
 
-        if len(history) <= self.recent_turns:
+        turn_boundaries = self.memory.get_turn_boundaries()
+        if len(turn_boundaries) <= self.recent_turns:
             return history, "full_history"
 
-        history_to_compress = history[:-self.recent_turns]
+        # Slice on real turn boundaries, not raw history-entry count: a
+        # single turn can span several entries (user message, one model
+        # call per tool round trip, each tool result), so counting entries
+        # instead of turns could cut a "recent" turn off mid-way.
+        cutoff_index = turn_boundaries[-self.recent_turns]
+        recent_history = history[cutoff_index:]
 
-        token_budget = max(1, self.compression_token_budget // 2)
-        user_sentences = self._unique_sentences(self._history_sentences(history_to_compress, {"user"}))
-        response_sentences = self._unique_sentences(
-            self._history_sentences(history_to_compress, {"model", "tool"}),
-            excluded=user_sentences,
+        # Pull sentences straight from Memory, which already tags each one
+        # with its real role (user/model/tool) and keeps them in
+        # chronological order — unlike the raw Content list, where a tool
+        # result is stored with role="user" (the API's only option for a
+        # function-response turn) and would otherwise be mistaken for
+        # something the user said.
+        labeled_sentences = self._unique_sentences(
+            f"{self.ROLE_LABELS.get(entry['role'], entry['role'])}: {entry['text']}"
+            for entry in self.memory.get_sentence_entries()
+            if entry["entry_index"] < cutoff_index
         )
 
-        user_context = self.tokenwise.compress(
+        compressed_context = self.tokenwise.compress(
             query=query,
-            token_budget=token_budget,
-            sentences=user_sentences,
-        )
-        response_context = self.tokenwise.compress(
-            query=query,
-            token_budget=token_budget,
-            sentences=response_sentences,
+            token_budget=self.compression_token_budget,
+            sentences=labeled_sentences,
         )
 
-        if not user_context and not response_context:
+        if not compressed_context:
             return history, "full_history"
 
-        context_parts = []
-        if user_context:
-            context_parts.append(f"Relevant user context:\n{user_context}")
-        if response_context:
-            context_parts.append(f"Relevant response context:\n{response_context}")
-        compressed_context = types.Content(
+        compressed_content = types.Content(
             role="user",
-            parts=[types.Part.from_text(text="\n\n".join(context_parts))],
+            parts=[types.Part.from_text(text=f"Relevant earlier context:\n{compressed_context}")],
         )
-        recent_history = history[-self.recent_turns :]
-        return [compressed_context, *recent_history], "compressed_history"
+        return [compressed_content, *recent_history], "compressed_history"
 
     @staticmethod
-    def _content_to_text(content):
-        parts = getattr(content, "parts", None) or []
-        text_chunks = []
-
-        for part in parts:
-            text = getattr(part, "text", None)
-            if text:
-                text_chunks.append(text)
-                continue
-
-            function_response = getattr(part, "function_response", None)
-            if function_response is None:
-                continue
-
-            response = getattr(function_response, "response", None)
-            if isinstance(response, dict) and "result" in response:
-                text_chunks.append(str(response["result"]))
-            elif response is not None:
-                text_chunks.append(str(response))
-
-        return " ".join(text_chunks)
-
-    @classmethod
-    def _history_sentences(cls, history, roles):
-        sentences = []
-        for content in history:
-            role = getattr(content, "role", None)
-            if role not in roles:
-                continue
-
-            text = cls._content_to_text(content)
-            if not text:
-                continue
-
-            sentences.extend(sentence.strip() for sentence in re.split(r"(?<=[.!?])\s+", text.strip()) if sentence.strip())
-
-        return sentences
-
-    @staticmethod
-    def _unique_sentences(sentences, excluded=None):
-        excluded_set = set(excluded or [])
+    def _unique_sentences(sentences):
         unique_sentences = []
         seen = set()
 
         for sentence in sentences:
-            if sentence in excluded_set or sentence in seen:
+            if sentence in seen:
                 continue
 
             seen.add(sentence)
@@ -146,7 +111,9 @@ class Runner:
             if self.tokenwise is not None:
                 self.tokenwise.set_sentences(self.memory.get_sentences())
 
-            function_calls = [part.function_call for part in content.parts if part.function_call]
+            # content.parts can be None (e.g. an empty/blocked response with
+            # no text and no function call) — nothing to act on either way.
+            function_calls = [part.function_call for part in (content.parts or []) if part.function_call]
             if not function_calls:
                 return response  # agent chose to answer instead of calling a tool: done
 

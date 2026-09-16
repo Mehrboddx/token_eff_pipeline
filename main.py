@@ -6,6 +6,7 @@ from uuid import uuid4
 from dotenv import load_dotenv
 
 from core.agent import Agent
+from core.cpcCompressor import CPCCompressor
 from core.geminiCompressor import GeminiCompressor
 from core.memory import Memory
 from core.runner import Runner
@@ -18,7 +19,7 @@ load_dotenv()
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT")
 LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
 MODEL = "gemini-2.5-flash"
-COMPRESSOR_BACKEND = os.environ.get("COMPRESSOR_BACKEND", "local")  # "local" or "gemini"
+COMPRESSOR_BACKEND = os.environ.get("COMPRESSOR_BACKEND", "local")  # "local", "gemini", or "cpc"
 LOGS_DIR = Path("logs")
 
 
@@ -84,7 +85,17 @@ def build_tokenwise() -> TokenWise:
     if COMPRESSOR_BACKEND == "gemini":
         return TokenWise(model=GeminiCompressor(project=PROJECT_ID, location=LOCATION, model=MODEL))
 
-    return TokenWise()
+    if COMPRESSOR_BACKEND == "cpc":
+        return TokenWise(model=CPCCompressor())
+
+    try:
+        # Without a loaded CPC tokenizer, TokenWise falls back to counting
+        # words, not tokens — token_budget then means something quite
+        # different from what gets sent to Gemini. tiktoken gives a much
+        # closer real token estimate for the same word count.
+        return TokenWise(use_openai_tokenizer=True)
+    except ImportError:
+        return TokenWise()
 
 
 def main() -> None:
@@ -92,7 +103,11 @@ def main() -> None:
     math_agent = build_agent(build_context_monitor(logger))
     memory = Memory()
     tokenwise = build_tokenwise()
-    runner = Runner(math_agent, memory, tokenwise=tokenwise, compression_sentence_threshold=2, compression_token_budget=50)
+    # compression_sentence_threshold/compression_token_budget/recent_turns
+    # now just take Runner's defaults (see core/runner.py), which are the
+    # values validated against eval/longmemeval.py rather than the small
+    # test values this used to hardcode.
+    runner = Runner(math_agent, memory, tokenwise=tokenwise)
     logger.info("[Compressor] backend=%s", COMPRESSOR_BACKEND)
 
     print("Math agent ready. Type 'exit' or 'quit' to stop.")
