@@ -16,7 +16,7 @@ class GeminiCompressor:
         "query below and a block of prior context, extract and condense only "
         "the sentences relevant to answering the query. Preserve original "
         "wording where possible instead of paraphrasing. Target roughly {token_budget} "
-        "words of output — do not pad to reach it, shorter is fine if that's "
+        "tokens of output — do not pad to reach it, shorter is fine if that's "
         "all that's relevant. Output only the compressed context, no preamble "
         "or explanation.\n\n"
         "Query: {query}\n\n"
@@ -32,6 +32,14 @@ class GeminiCompressor:
     ) -> None:
         self.model = model
         self.client = client or genai.Client(vertexai=True, project=project, location=location)
+        # Real token counting for _enforce_budget instead of word count --
+        # a "2000" budget was previously ~2000 words, which for English
+        # text is closer to ~2600 real tokens (words * ~1.3), meaning this
+        # compressor was silently getting a noticeably larger effective
+        # context than a CPC compressor given the same nominal token_budget.
+        import tiktoken
+
+        self._tokenizer = tiktoken.encoding_for_model("gpt-4")
 
     def _config(self) -> types.GenerateContentConfig:
         return types.GenerateContentConfig(temperature=0)
@@ -40,10 +48,23 @@ class GeminiCompressor:
     def _split_sentences(text: str) -> list[str]:
         return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
 
+    def _count_tokens(self, text: str) -> int:
+        return len(self._tokenizer.encode(text))
+
+    def _truncate_to_budget(self, sentence: str, token_budget: int) -> str:
+        if token_budget <= 0:
+            return ""
+        token_ids = self._tokenizer.encode(sentence)[:token_budget]
+        return self._tokenizer.decode(token_ids).strip() + "…"
+
     def _enforce_budget(self, text: str, token_budget: int) -> str:
         """Gemini is asked to target token_budget but isn't guaranteed to
-        respect it exactly, so trim with the same greedy word-count approach
-        TokenWise's local fallback uses, keeping sentence order intact."""
+        respect it exactly, so trim with the same greedy approach
+        TokenWise's local fallback uses, keeping sentence order intact.
+        Two fixes over the original version: counts real tokens (tiktoken)
+        rather than words, and truncates (rather than including in full)
+        a first sentence that alone exceeds the budget -- the same
+        overrun bug already fixed in TokenWise's local compressor."""
         sentences = self._split_sentences(text)
         if not sentences:
             return ""
@@ -51,11 +72,17 @@ class GeminiCompressor:
         selected: list[str] = []
         used = 0
         for sentence in sentences:
-            words = len(sentence.split())
-            if selected and used + words > token_budget:
+            tokens = self._count_tokens(sentence)
+
+            if not selected and tokens > token_budget:
+                sentence = self._truncate_to_budget(sentence, token_budget)
+                tokens = self._count_tokens(sentence)
+
+            if selected and used + tokens > token_budget:
                 break
+
             selected.append(sentence)
-            used += words
+            used += tokens
             if used >= token_budget:
                 break
 
