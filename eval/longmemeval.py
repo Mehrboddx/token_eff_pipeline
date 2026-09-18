@@ -383,6 +383,157 @@ def _next_run_number(log_dir, gcs_uri=None):
     return max(existing, default=0) + 1
 
 
+JUDGE_PROMPT_TEMPLATE = (
+    "You are grading whether an AI assistant's response correctly answers a "
+    "question, given a reference answer.\n\n"
+    "Question: {question}\n"
+    "Reference answer: {reference}\n"
+    "Assistant's response: {predicted}\n\n"
+    "Grade the response as CORRECT if it conveys the same essential fact(s) as "
+    "the reference answer, even if worded differently, abbreviated, or phrased "
+    "in a different grammatical person (e.g. \"your sister\" vs \"my sister\" "
+    "both refer to the same person from the assistant's point of view). Minor "
+    "omissions of extra detail are fine as long as the core answer matches.\n\n"
+    "If the reference answer says the information was not mentioned/available "
+    "(an abstention case), grade the response as CORRECT if it also indicates "
+    "it doesn't know or can't find that specific information -- it does not "
+    "need to repeat any other distractor details the reference happens to "
+    "mention.\n\n"
+    "Grade as INCORRECT if the response states a different fact than the "
+    "reference, confidently answers when it should have abstained, or fails "
+    "to answer when the reference expects a specific answer.\n\n"
+    "Respond with exactly one word: CORRECT or INCORRECT."
+)
+
+
+def llm_judge_grade(client, question, reference, predicted):
+    prompt = JUDGE_PROMPT_TEMPLATE.format(question=question, reference=reference, predicted=predicted)
+    response = client.models.generate_content(
+        model=MODEL,
+        contents=[types.Content(role="user", parts=[types.Part.from_text(text=prompt)])],
+        config=types.GenerateContentConfig(temperature=0),
+    )
+    verdict = (response.text or "").strip().upper()
+    return verdict.startswith("CORRECT"), verdict
+
+
+def run_judge_stage(args, log_dir):
+    """--stage judge: re-grade an already-answered log's predicted/reference
+    pairs with an LLM judge instead of the heuristic text-match grader. Cheap
+    -- one Gemini call per row, no compression or answering redone -- since
+    every answered log already has everything a judge needs. Logs both
+    verdicts side by side (heuristic_correct, llm_judge_correct) rather than
+    replacing one with the other, so the two can be compared directly."""
+    existing_results = []
+    if args.resume is not None:
+        run_number = args.resume
+        log_path = log_dir / f"eval_longmemeval_run{run_number:04d}.jsonl"
+        if args.log_gcs_uri and not log_path.exists():
+            blob = _gcs_blob(args.log_gcs_uri, log_path.name)
+            if blob.exists():
+                print(f"Local log missing; downloading from {args.log_gcs_uri}/{log_path.name}")
+                blob.download_to_filename(str(log_path))
+        run_start, existing_results = load_run_log(log_path)
+        if run_start is None:
+            raise SystemExit(f"--resume {run_number}: {log_path} has no run_start record to resume from")
+        args.from_log = run_start.get("from_log", args.from_log)
+        print(f"Resuming judge run {run_number} ({log_path}): "
+              f"{len(existing_results)} results already logged")
+    else:
+        run_number = _next_run_number(log_dir, gcs_uri=args.log_gcs_uri)
+        log_path = log_dir / f"eval_longmemeval_run{run_number:04d}.jsonl"
+        print(f"Logging full per-question results to {log_path}")
+
+    if not args.from_log:
+        raise SystemExit("--stage judge requires --from-log <path to a --stage full/answer JSONL log>")
+
+    from_log_path = Path(args.from_log)
+    _, answered_rows = load_run_log(from_log_path)
+    answered_rows = [row for row in answered_rows if "predicted" in row]
+    if not answered_rows:
+        raise SystemExit(f"{from_log_path} has no answered result rows (predicted/reference) to judge")
+    print(f"Loaded {len(answered_rows)} answered questions from {from_log_path}")
+
+    from google import genai
+    judge_client = genai.Client(vertexai=True, project=args.project, location=args.location)
+    log_gcs_blob = _gcs_blob(args.log_gcs_uri, log_path.name) if args.log_gcs_uri else None
+
+    already_done = {(row["config"], row["question_id"]) for row in existing_results}
+    results = {}
+    for row in existing_results:
+        results.setdefault(row["config"], []).append(row)
+
+    with log_path.open("a", encoding="utf-8") as log_file:
+        def log(record):
+            log_file.write(json.dumps({"timestamp": datetime.now().isoformat(), **record}) + "\n")
+            log_file.flush()
+            if log_gcs_blob is not None:
+                log_gcs_blob.upload_from_filename(str(log_path))
+
+        log({
+            "event": "run_resume" if args.resume is not None else "run_start",
+            "run": run_number,
+            "stage": "judge",
+            "from_log": str(from_log_path),
+            "project": args.project,
+            "location": args.location,
+        })
+
+        for index, arow in enumerate(answered_rows, start=1):
+            key = (arow["config"], arow["question_id"])
+            if key in already_done:
+                continue
+
+            print(f"\n[{index}/{len(answered_rows)}] {arow['question_id']} ({arow['question_type']}): "
+                  f"{arow['question'][:120]}")
+            try:
+                judge_correct, verdict = llm_judge_grade(
+                    judge_client, arow["question"], arow["reference"], arow["predicted"],
+                )
+            except Exception as exc:
+                judge_correct, verdict = None, f"[ERROR: {exc}]"
+
+            row = {
+                "config": arow["config"],
+                "question_id": arow["question_id"],
+                "question_type": arow["question_type"],
+                "question": arow["question"],
+                "reference": arow["reference"],
+                "predicted": arow["predicted"],
+                "heuristic_correct": arow.get("correct"),
+                "llm_judge_correct": judge_correct,
+                "llm_judge_verdict": verdict,
+            }
+            results.setdefault(row["config"], []).append(row)
+            log({"event": "result", **row})
+
+            agreement = "" if judge_correct == row["heuristic_correct"] else "  <-- DISAGREES with heuristic"
+            status = "CORRECT" if judge_correct else "INCORRECT"
+            print(f"  [{row['config']}] judge={status}{agreement} | "
+                  f"heuristic={'PASS' if row['heuristic_correct'] else 'FAIL'}")
+
+        print("\n=== Summary (LLM judge vs. heuristic grader) ===")
+        summary = {}
+        for name, rows in results.items():
+            total = len(rows)
+            judge_passed = sum(1 for row in rows if row.get("llm_judge_correct"))
+            heuristic_passed = sum(1 for row in rows if row.get("heuristic_correct"))
+            print(f"\n{name}: heuristic {heuristic_passed}/{total} ({heuristic_passed / total:.1%})  "
+                  f"vs  LLM-judge {judge_passed}/{total} ({judge_passed / total:.1%})")
+            by_type = {}
+            for row in rows:
+                by_type.setdefault(row["question_type"], []).append(row)
+            for question_type, qrows in sorted(by_type.items()):
+                n = len(qrows)
+                h = sum(1 for row in qrows if row.get("heuristic_correct"))
+                j = sum(1 for row in qrows if row.get("llm_judge_correct"))
+                print(f"  {question_type}: heuristic {h}/{n} ({h / n:.1%})  vs  judge {j}/{n} ({j / n:.1%})")
+            summary[name] = {"total": total, "heuristic_passed": heuristic_passed, "llm_judge_passed": judge_passed}
+        log({"event": "run_end", "summary": summary})
+
+    print(f"\nFull results saved to {log_path}")
+
+
 def run_answer_stage(args, log_dir):
     """--stage answer: read a --stage compress log's described histories
     and do just the Gemini call + grading for each -- no GPU, no
@@ -574,7 +725,7 @@ def main():
     )
     parser.add_argument(
         "--stage",
-        choices=["full", "compress", "answer"],
+        choices=["full", "compress", "answer", "judge"],
         default="full",
         help="'full' (default): compress and answer in one pass. 'compress': only run the "
              "compressor and log the resulting context -- no Gemini call, no GCP credentials "
@@ -582,14 +733,18 @@ def main():
              "a GPU machine that doesn't have Vertex AI access. 'answer': read a --stage "
              "compress log via --from-log and only do the Gemini call + grading -- no GPU or "
              "compressor needed -- for finishing the eval on a machine that does have Vertex AI "
-             "access. Left at the default with no --project/GOOGLE_CLOUD_PROJECT set, this "
+             "access. 'judge': read a 'full' or 'answer' log via --from-log and re-grade its "
+             "predicted/reference pairs with an LLM judge instead of the heuristic text-match "
+             "grader -- cheap (one Gemini call per row, no compression or answering redone) and "
+             "much less likely to mark a correct-but-differently-worded answer wrong. Left at "
+             "the default ('full') with no --project/GOOGLE_CLOUD_PROJECT set, this "
              "automatically falls back to 'compress': Gemini isn't reachable anyway, so there's "
              "no reason to fail loudly instead of just doing the half that still works.",
     )
     parser.add_argument(
         "--from-log", default=None, metavar="PATH",
-        help="A --stage compress JSONL log to read compressed histories from. Required for "
-             "--stage answer.",
+        help="A --stage compress log to read compressed histories from (required for --stage "
+             "answer), or a --stage full/answer log to re-grade (required for --stage judge).",
     )
     args = parser.parse_args()
 
@@ -621,6 +776,10 @@ def main():
 
     if args.stage == "answer":
         run_answer_stage(args, log_dir)
+        return
+
+    if args.stage == "judge":
+        run_judge_stage(args, log_dir)
         return
 
     existing_results = []
