@@ -485,7 +485,7 @@ def run_judge_stage(args, log_dir):
                 continue
 
             print(f"\n[{index}/{len(answered_rows)}] {arow['question_id']} ({arow['question_type']}): "
-                  f"{arow['question'][:120]}")
+                  f"{arow['question'][:120]}", flush=True)
             try:
                 judge_correct, verdict = llm_judge_grade(
                     judge_client, arow["question"], arow["reference"], arow["predicted"],
@@ -510,7 +510,7 @@ def run_judge_stage(args, log_dir):
             agreement = "" if judge_correct == row["heuristic_correct"] else "  <-- DISAGREES with heuristic"
             status = "CORRECT" if judge_correct else "INCORRECT"
             print(f"  [{row['config']}] judge={status}{agreement} | "
-                  f"heuristic={'PASS' if row['heuristic_correct'] else 'FAIL'}")
+                  f"heuristic={'PASS' if row['heuristic_correct'] else 'FAIL'}", flush=True)
 
         print("\n=== Summary (LLM judge vs. heuristic grader) ===")
         summary = {}
@@ -603,7 +603,7 @@ def run_answer_stage(args, log_dir):
                 continue
 
             print(f"\n[{index}/{len(compress_rows)}] {crow['question_id']} ({crow['question_type']}): "
-                  f"{crow['question'][:120]}")
+                  f"{crow['question'][:120]}", flush=True)
             try:
                 predicted = answer_from_compressed(agent, crow["history"])
             except Exception as exc:
@@ -626,7 +626,7 @@ def run_answer_stage(args, log_dir):
             log({"event": "result", **row})
 
             status = "PASS" if correct else "FAIL"
-            print(f"  [{row['config']}] {status} | ref: {crow['reference']!r} | got: {predicted[:150]!r}")
+            print(f"  [{row['config']}] {status} | ref: {crow['reference']!r} | got: {predicted[:150]!r}", flush=True)
 
         print("\n=== Summary ===")
         summary = {}
@@ -879,7 +879,7 @@ def main():
             if not pending_configs:
                 continue  # every config for this question was already logged in a prior session
 
-            print(f"\n[{index}/{len(items)}] {item['question_id']} ({item['question_type']}): {item['question'][:120]}")
+            print(f"\n[{index}/{len(items)}] {item['question_id']} ({item['question_type']}): {item['question'][:120]}", flush=True)
             for name, tokenwise in pending_configs:
                 if args.stage == "compress":
                     try:
@@ -900,7 +900,7 @@ def main():
                     }
                     results[name].append(row)
                     log({"event": "result", **row})
-                    print(f"  [{name}] compressed (mode={mode})")
+                    print(f"  [{name}] compressed (mode={mode})", flush=True)
                     continue
 
                 try:
@@ -927,7 +927,7 @@ def main():
                 log({"event": "result", **row})
 
                 status = "PASS" if correct else "FAIL"
-                print(f"  [{name}] {status} | ref: {item['answer']!r} | got: {predicted[:150]!r}")
+                print(f"  [{name}] {status} | ref: {item['answer']!r} | got: {predicted[:150]!r}", flush=True)
 
         print("\n=== Summary ===")
         if args.stage == "compress":
