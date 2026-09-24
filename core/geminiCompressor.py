@@ -31,7 +31,15 @@ class GeminiCompressor:
         client: Optional[genai.Client] = None,
     ) -> None:
         self.model = model
-        self.client = client or genai.Client(vertexai=True, project=project, location=location)
+        # Explicit timeout: without one, a stalled request (e.g. an unusually
+        # large ~150K-token compression prompt) can hang indefinitely instead
+        # of raising so callers can retry/log it.
+        self.client = client or genai.Client(
+            vertexai=True,
+            project=project,
+            location=location,
+            http_options=types.HttpOptions(timeout=120_000),
+        )
         # Real token counting for _enforce_budget instead of word count --
         # a "2000" budget was previously ~2000 words, which for English
         # text is closer to ~2600 real tokens (words * ~1.3), meaning this

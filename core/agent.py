@@ -22,7 +22,14 @@ class Agent:
         self.system_prompt = system_prompt
         self.tools = tools or {}  # {name: Tool}
         self.context_monitor = context_monitor
-        self.client = genai.Client(vertexai=True, project=project, location=location)
+        # Explicit timeout: without one, a stalled request can hang the
+        # process indefinitely instead of raising so callers can retry/log it.
+        self.client = genai.Client(
+            vertexai=True,
+            project=project,
+            location=location,
+            http_options=types.HttpOptions(timeout=120_000),
+        )
 
     @staticmethod
     def _content_text(content):

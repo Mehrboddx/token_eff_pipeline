@@ -21,14 +21,25 @@ import json
 import os
 import random
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
+
+# Windows' console/redirect default codepage (cp1252) can't encode plenty of
+# characters that show up in ordinary Gemini answers (curly quotes, em dashes,
+# accented names) -- without this, a print() partway through a long run raises
+# UnicodeEncodeError and kills the process even though the result was already
+# written to the JSONL log.
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from dotenv import load_dotenv
 from google.genai import types
 from huggingface_hub import hf_hub_download
 
 from core.agent import Agent
+from core.cpcCompressor import BASE_MODELS as CPC_BASE_MODELS
 from core.cpcCompressor import CPCCompressor
 from core.geminiCompressor import GeminiCompressor
 from core.memory import Memory
@@ -192,6 +203,9 @@ def build_tokenwise(compressor: str, cpc_max_seq_length: int = 1536, cpc_preset:
     if compressor == "gemini":
         return TokenWise(model=GeminiCompressor(project=project, location=location, model=MODEL))
 
+    if compressor == "none":
+        return None
+
     return TokenWise(use_openai_tokenizer=True)
 
 
@@ -342,6 +356,25 @@ def load_run_log(log_path):
     return run_start, results
 
 
+def _resolve_source_settings(from_log_path, from_run_start):
+    """The compressor/token_budget/etc. that actually produced from_log's
+    content -- an 'answer' or 'judge' stage log has no such settings of its
+    own (it only takes --from-log), so without this a log three stages deep
+    (compress -> answer -> judge) would need each intermediate file opened
+    by hand to find out what was actually run, exactly the problem this eval
+    file's own logging was found to have (see conversation history: run
+    0012-0026 needed manual backfilling for this). Chains through an
+    already-resolved 'source_settings' on from_run_start when present (an
+    answer log whose own from_log was a compress log) instead of stopping
+    one hop short at that intermediate log's empty settings."""
+    settings = dict(from_run_start["source_settings"]) if from_run_start.get("source_settings") else {
+        key: from_run_start.get(key)
+        for key in ("compressor", "cpc_preset", "cpc_max_seq_length", "token_budget")
+    }
+    settings["resolved_from"] = str(from_log_path)
+    return settings
+
+
 def _gcs_blob(gcs_uri, filename):
     from google.cloud import storage
 
@@ -448,14 +481,20 @@ def run_judge_stage(args, log_dir):
         raise SystemExit("--stage judge requires --from-log <path to a --stage full/answer JSONL log>")
 
     from_log_path = Path(args.from_log)
-    _, answered_rows = load_run_log(from_log_path)
+    from_run_start, answered_rows = load_run_log(from_log_path)
     answered_rows = [row for row in answered_rows if "predicted" in row]
     if not answered_rows:
         raise SystemExit(f"{from_log_path} has no answered result rows (predicted/reference) to judge")
     print(f"Loaded {len(answered_rows)} answered questions from {from_log_path}")
 
     from google import genai
-    judge_client = genai.Client(vertexai=True, project=args.project, location=args.location)
+    from google.genai import types as genai_types
+    judge_client = genai.Client(
+        vertexai=True,
+        project=args.project,
+        location=args.location,
+        http_options=genai_types.HttpOptions(timeout=120_000),
+    )
     log_gcs_blob = _gcs_blob(args.log_gcs_uri, log_path.name) if args.log_gcs_uri else None
 
     already_done = {(row["config"], row["question_id"]) for row in existing_results}
@@ -474,7 +513,9 @@ def run_judge_stage(args, log_dir):
             "event": "run_resume" if args.resume is not None else "run_start",
             "run": run_number,
             "stage": "judge",
+            "model": MODEL,
             "from_log": str(from_log_path),
+            "source_settings": _resolve_source_settings(from_log_path, from_run_start),
             "project": args.project,
             "location": args.location,
         })
@@ -568,7 +609,7 @@ def run_answer_stage(args, log_dir):
         raise SystemExit("--stage answer requires --from-log <path to a --stage compress JSONL log>")
 
     from_log_path = Path(args.from_log)
-    _, compress_rows = load_run_log(from_log_path)
+    from_run_start, compress_rows = load_run_log(from_log_path)
     if not compress_rows:
         raise SystemExit(f"{from_log_path} has no compress-stage result rows to answer")
     print(f"Loaded {len(compress_rows)} compressed questions from {from_log_path}")
@@ -592,7 +633,9 @@ def run_answer_stage(args, log_dir):
             "event": "run_resume" if args.resume is not None else "run_start",
             "run": run_number,
             "stage": "answer",
+            "model": MODEL,
             "from_log": str(from_log_path),
+            "source_settings": _resolve_source_settings(from_log_path, from_run_start),
             "project": args.project,
             "location": args.location,
         })
@@ -664,12 +707,15 @@ def main():
     parser.add_argument("--recent-turns", type=int, default=4)
     parser.add_argument(
         "--compressor",
-        choices=["lexical", "gemini", "cpc"],
+        choices=["lexical", "gemini", "cpc", "none"],
         default="lexical",
         help="'lexical' ranks sentences by query word-overlap (default, no extra "
              "model load). 'cpc' uses the local context-aware embedding model "
              "(replicate/cpc_compressor.py) -- slow to load, needs torch/transformers/peft. "
-             "'gemini' calls a hosted Gemini model to do the compression itself.",
+             "'gemini' calls a hosted Gemini model to do the compression itself. "
+             "'none' disables compression entirely (tokenwise=None, full raw haystack sent "
+             "as context every call) -- the uncompressed baseline, logged as "
+             "'baseline_full_history' just like --compare-baseline's second config.",
     )
     parser.add_argument(
         "--cpc-max-seq-length", type=int, default=1536,
@@ -835,8 +881,9 @@ def main():
         args.compressor, cpc_max_seq_length=args.cpc_max_seq_length, cpc_preset=args.cpc_preset,
         project=args.project, location=args.location,
     )
-    configs = [(f"compressed_{args.compressor}", tokenwise)]
-    if args.compare_baseline:
+    primary_name = "baseline_full_history" if args.compressor == "none" else f"compressed_{args.compressor}"
+    configs = [(primary_name, tokenwise)]
+    if args.compare_baseline and primary_name != "baseline_full_history":
         configs.append(("baseline_full_history", None))
 
     log_gcs_blob = _gcs_blob(args.log_gcs_uri, log_path.name) if args.log_gcs_uri else None
@@ -858,12 +905,20 @@ def main():
             "event": "run_resume" if args.resume is not None else "run_start",
             "run": run_number,
             "stage": args.stage,
+            # The model used wherever this run calls Gemini: answering
+            # (build_agent), compression (build_tokenwise's "gemini" branch),
+            # and/or LLM-judge grading -- all three share this one constant
+            # today, but recording it here means a future change to MODEL
+            # doesn't silently make older logs ambiguous about which model
+            # produced them.
+            "model": MODEL,
             "dataset": f"{DATASET_REPO}:{DATASET_FILE}",
             "limit": args.limit,
             "seed": args.seed,
             "question_types": question_types,
             "compressor": args.compressor,
             "cpc_preset": args.cpc_preset if args.compressor == "cpc" else None,
+            "cpc_base_model": CPC_BASE_MODELS.get(args.cpc_preset) if args.compressor == "cpc" else None,
             "cpc_max_seq_length": args.cpc_max_seq_length if args.compressor == "cpc" else None,
             "token_budget": args.token_budget,
             "sentence_threshold": args.sentence_threshold,
