@@ -369,7 +369,75 @@ def summarize(name, rows):
         print(f"  {question_type}: {sum(outcomes)}/{len(outcomes)} ({sum(outcomes) / len(outcomes):.1%})")
 
 
-RUN_LOG_PATTERN = re.compile(r"eval_longmemeval_run(\d+)\.jsonl$")
+# "eval_longmemeval_run0039.jsonl" or, since settings tags were added,
+# "eval_longmemeval_run0039_compress_cpc-mistral_b500_w1.jsonl".
+RUN_LOG_PATTERN = re.compile(r"eval_longmemeval_run(\d+)(?:_[A-Za-z0-9._-]+)?\.jsonl$")
+
+
+def run_tag(stage, settings):
+    """Short, human-readable summary of a run's settings for its file name.
+    Only a convenience for browsing: the authoritative settings are the
+    run_start record inside the file (what --resume reads)."""
+    parts = [stage]
+    compressor = settings.get("compressor")
+    if compressor == "cpc":
+        parts.append(f"cpc-{settings.get('cpc_preset')}")
+        if settings.get("cpc_attention") == "causal":
+            parts.append("causal")
+    elif compressor == "none":
+        parts.append("fullhistory")
+    elif compressor:
+        parts.append(compressor)
+    if compressor not in (None, "none") and settings.get("token_budget"):
+        parts.append(f"b{settings['token_budget']}")
+
+    selection = settings.get("selection") or {}
+    if selection.get("window"):
+        parts.append(f"w{selection['window']}")
+    if selection.get("pair_turns"):
+        parts.append("pair")
+    if selection.get("top_sessions"):
+        parts.append(f"top{selection['top_sessions']}")
+    if selection.get("mmr_lambda"):
+        parts.append(f"mmr{selection['mmr_lambda']:g}{'s' if selection.get('mmr_similarity') == 'semantic' else ''}")
+    if selection.get("recency_weight"):
+        parts.append(f"rec{selection['recency_weight']:g}")
+    if selection.get("lexical_weight"):
+        parts.append(f"hyb{selection['lexical_weight']:g}")
+    if settings.get("decompositions"):
+        parts.append("mq")
+    return re.sub(r"[^A-Za-z0-9._-]", "-", "_".join(parts))
+
+
+def new_log_path(log_dir, run_number, stage, settings):
+    return log_dir / f"eval_longmemeval_run{run_number:04d}_{run_tag(stage, settings)}.jsonl"
+
+
+def find_run_log(log_dir, run_number, gcs_uri=None):
+    """The existing log for `run_number`, whatever its settings tag --
+    downloaded from the GCS mirror first if it only exists there (a fresh
+    Vertex AI container starts with an empty local logs/)."""
+    local = [path for path in log_dir.glob(f"eval_longmemeval_run{run_number:04d}*.jsonl")
+             if (match := RUN_LOG_PATTERN.match(path.name)) and int(match.group(1)) == run_number]
+    if local:
+        return local[0]
+
+    if gcs_uri:
+        from google.cloud import storage
+
+        bucket_name, _, prefix = gcs_uri[len("gs://"):].partition("/")
+        list_prefix = f"{prefix.rstrip('/')}/" if prefix else ""
+        for blob in storage.Client().list_blobs(bucket_name, prefix=f"{list_prefix}eval_longmemeval_run{run_number:04d}"):
+            name = blob.name.rsplit("/", 1)[-1]
+            match = RUN_LOG_PATTERN.match(name)
+            if match and int(match.group(1)) == run_number:
+                path = log_dir / name
+                print(f"Local log missing; downloading from {gcs_uri}/{name}")
+                blob.download_to_filename(str(path))
+                return path
+
+    raise SystemExit(f"--resume {run_number}: no eval_longmemeval_run{run_number:04d}*.jsonl in {log_dir}"
+                     + (f" or {gcs_uri}" if gcs_uri else ""))
 
 
 def load_run_log(log_path):
@@ -410,7 +478,8 @@ def _resolve_source_settings(from_log_path, from_run_start):
     one hop short at that intermediate log's empty settings."""
     settings = dict(from_run_start["source_settings"]) if from_run_start.get("source_settings") else {
         key: from_run_start.get(key)
-        for key in ("compressor", "cpc_preset", "cpc_max_seq_length", "token_budget")
+        for key in ("compressor", "cpc_preset", "cpc_max_seq_length", "cpc_attention", "token_budget",
+                    "min_unit_words", "selection", "decompositions")
     }
     settings["resolved_from"] = str(from_log_path)
     return settings
@@ -501,22 +570,13 @@ def run_judge_stage(args, log_dir):
     existing_results = []
     if args.resume is not None:
         run_number = args.resume
-        log_path = log_dir / f"eval_longmemeval_run{run_number:04d}.jsonl"
-        if args.log_gcs_uri and not log_path.exists():
-            blob = _gcs_blob(args.log_gcs_uri, log_path.name)
-            if blob.exists():
-                print(f"Local log missing; downloading from {args.log_gcs_uri}/{log_path.name}")
-                blob.download_to_filename(str(log_path))
+        log_path = find_run_log(log_dir, run_number, args.log_gcs_uri)
         run_start, existing_results = load_run_log(log_path)
         if run_start is None:
             raise SystemExit(f"--resume {run_number}: {log_path} has no run_start record to resume from")
         args.from_log = run_start.get("from_log", args.from_log)
         print(f"Resuming judge run {run_number} ({log_path}): "
               f"{len(existing_results)} results already logged")
-    else:
-        run_number = _next_run_number(log_dir, gcs_uri=args.log_gcs_uri)
-        log_path = log_dir / f"eval_longmemeval_run{run_number:04d}.jsonl"
-        print(f"Logging full per-question results to {log_path}")
 
     if not args.from_log:
         raise SystemExit("--stage judge requires --from-log <path to a --stage full/answer JSONL log>")
@@ -527,6 +587,12 @@ def run_judge_stage(args, log_dir):
     if not answered_rows:
         raise SystemExit(f"{from_log_path} has no answered result rows (predicted/reference) to judge")
     print(f"Loaded {len(answered_rows)} answered questions from {from_log_path}")
+    source_settings = _resolve_source_settings(from_log_path, from_run_start)
+
+    if args.resume is None:
+        run_number = _next_run_number(log_dir, gcs_uri=args.log_gcs_uri)
+        log_path = new_log_path(log_dir, run_number, "judge", source_settings)
+        print(f"Logging full per-question results to {log_path}")
 
     from google import genai
     from google.genai import types as genai_types
@@ -556,7 +622,7 @@ def run_judge_stage(args, log_dir):
             "stage": "judge",
             "model": MODEL,
             "from_log": str(from_log_path),
-            "source_settings": _resolve_source_settings(from_log_path, from_run_start),
+            "source_settings": source_settings,
             "project": args.project,
             "location": args.location,
         })
@@ -626,12 +692,7 @@ def run_answer_stage(args, log_dir):
     existing_results = []
     if args.resume is not None:
         run_number = args.resume
-        log_path = log_dir / f"eval_longmemeval_run{run_number:04d}.jsonl"
-        if args.log_gcs_uri and not log_path.exists():
-            blob = _gcs_blob(args.log_gcs_uri, log_path.name)
-            if blob.exists():
-                print(f"Local log missing; downloading from {args.log_gcs_uri}/{log_path.name}")
-                blob.download_to_filename(str(log_path))
+        log_path = find_run_log(log_dir, run_number, args.log_gcs_uri)
         run_start, existing_results = load_run_log(log_path)
         if run_start is None:
             raise SystemExit(f"--resume {run_number}: {log_path} has no run_start record to resume from")
@@ -641,10 +702,6 @@ def run_answer_stage(args, log_dir):
         args.from_log = run_start.get("from_log", args.from_log)
         print(f"Resuming answer run {run_number} ({log_path}): "
               f"{len(existing_results)} results already logged")
-    else:
-        run_number = _next_run_number(log_dir, gcs_uri=args.log_gcs_uri)
-        log_path = log_dir / f"eval_longmemeval_run{run_number:04d}.jsonl"
-        print(f"Logging full per-question results to {log_path}")
 
     if not args.from_log:
         raise SystemExit("--stage answer requires --from-log <path to a --stage compress JSONL log>")
@@ -654,6 +711,12 @@ def run_answer_stage(args, log_dir):
     if not compress_rows:
         raise SystemExit(f"{from_log_path} has no compress-stage result rows to answer")
     print(f"Loaded {len(compress_rows)} compressed questions from {from_log_path}")
+    source_settings = _resolve_source_settings(from_log_path, from_run_start)
+
+    if args.resume is None:
+        run_number = _next_run_number(log_dir, gcs_uri=args.log_gcs_uri)
+        log_path = new_log_path(log_dir, run_number, "answer", source_settings)
+        print(f"Logging full per-question results to {log_path}")
 
     agent = build_agent(project=args.project, location=args.location)
     log_gcs_blob = _gcs_blob(args.log_gcs_uri, log_path.name) if args.log_gcs_uri else None
@@ -676,7 +739,7 @@ def run_answer_stage(args, log_dir):
             "stage": "answer",
             "model": MODEL,
             "from_log": str(from_log_path),
-            "source_settings": _resolve_source_settings(from_log_path, from_run_start),
+            "source_settings": source_settings,
             "project": args.project,
             "location": args.location,
         })
@@ -999,15 +1062,9 @@ def main():
         # started in, regardless of what --stage defaults to or whether
         # --project happens to be set this time -- peek at its own
         # run_start before deciding how to dispatch below.
-        peek_path = log_dir / f"eval_longmemeval_run{args.resume:04d}.jsonl"
-        if not peek_path.exists() and args.log_gcs_uri:
-            blob = _gcs_blob(args.log_gcs_uri, peek_path.name)
-            if blob.exists():
-                blob.download_to_filename(str(peek_path))
-        if peek_path.exists():
-            peek_start, _ = load_run_log(peek_path)
-            if peek_start and peek_start.get("stage"):
-                args.stage = peek_start["stage"]
+        peek_start, _ = load_run_log(find_run_log(log_dir, args.resume, args.log_gcs_uri))
+        if peek_start and peek_start.get("stage"):
+            args.stage = peek_start["stage"]
     elif args.stage == "full" and not args.project:
         print(
             "No --project (and no GOOGLE_CLOUD_PROJECT env var) -- Gemini isn't reachable, so "
@@ -1036,17 +1093,7 @@ def main():
     existing_results = []
     if args.resume is not None:
         run_number = args.resume
-        log_path = log_dir / f"eval_longmemeval_run{run_number:04d}.jsonl"
-
-        if args.log_gcs_uri and not log_path.exists():
-            # A fresh Vertex AI job container has no local disk history --
-            # the log this resume needs only exists in GCS from the prior
-            # (interrupted) attempt.
-            blob = _gcs_blob(args.log_gcs_uri, log_path.name)
-            if blob.exists():
-                print(f"Local log missing; downloading from {args.log_gcs_uri}/{log_path.name}")
-                blob.download_to_filename(str(log_path))
-
+        log_path = find_run_log(log_dir, run_number, args.log_gcs_uri)
         run_start, existing_results = load_run_log(log_path)
         if run_start is None:
             raise SystemExit(f"--resume {run_number}: {log_path} has no run_start record to resume from")
@@ -1075,7 +1122,14 @@ def main():
               f"{len(existing_results)} (config, question) results already logged")
     else:
         run_number = _next_run_number(log_dir, gcs_uri=args.log_gcs_uri)
-        log_path = log_dir / f"eval_longmemeval_run{run_number:04d}.jsonl"
+        log_path = new_log_path(log_dir, run_number, args.stage, {
+            "compressor": args.compressor,
+            "cpc_preset": args.cpc_preset,
+            "cpc_attention": args.cpc_attention,
+            "token_budget": args.token_budget,
+            "selection": asdict(selection_from_args(args)),
+            "decompositions": args.decompositions,
+        })
         print(f"Logging full per-question results to {log_path}")
 
     question_types = args.question_types.split(",") if args.question_types else None

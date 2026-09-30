@@ -463,20 +463,11 @@ class CPCCompressor:
 
         hidden = None
         sums: dict[int, torch.Tensor] = {}
-        started = time.monotonic()
-        misses_before = self.embedding_cache.misses
-        for chunk_index, chunk in enumerate(chunks, start=1):
+        for chunk in chunks:
             vectors = self._chunk_embeddings(chunk).to(torch.float32)
             hidden = vectors.shape[1]
             for (unit_index, _, _), vector in zip(chunk, vectors):
                 sums[unit_index] = sums[unit_index] + vector if unit_index in sums else vector
-            if chunk_index % 25 == 0 or chunk_index == len(chunks):
-                encoded = self.embedding_cache.misses - misses_before
-                print(
-                    f"  chunk {chunk_index}/{len(chunks)} ({encoded} encoded, "
-                    f"{chunk_index - encoded} cached, {time.monotonic() - started:.0f}s)",
-                    file=sys.stderr, flush=True,
-                )
 
         embeddings = torch.zeros(len(texts), hidden or 1)
         for unit_index, vector in sums.items():
