@@ -1,0 +1,8 @@
+.git
+.venv
+logs/
+**/__pycache__
+.env
+replicate/output
+replicate/output_gemini_compressor/
+*.pptx
