@@ -88,14 +88,7 @@ def build_tokenwise() -> TokenWise:
     if COMPRESSOR_BACKEND == "cpc":
         return TokenWise(model=CPCCompressor())
 
-    try:
-        # Without a loaded CPC tokenizer, TokenWise falls back to counting
-        # words, not tokens — token_budget then means something quite
-        # different from what gets sent to Gemini. tiktoken gives a much
-        # closer real token estimate for the same word count.
-        return TokenWise(use_openai_tokenizer=True)
-    except ImportError:
-        return TokenWise()
+    return TokenWise()
 
 
 def main() -> None:

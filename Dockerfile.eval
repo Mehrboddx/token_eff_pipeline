@@ -20,10 +20,10 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Same torch/torchvision install as replicate/dockerfile's (cu126 wheels;
-# the NVIDIA driver itself comes from Vertex AI's GPU VM at runtime, not
-# from this image).
-RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu126
+# cu128 wheels: they run on Vertex AI's L4/T4 and on Blackwell cards
+# (cu126 has no RTX 50xx kernels). The NVIDIA driver itself comes from the
+# GPU VM at runtime, not from this image.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu128
 
 COPY eval/requirements.txt ./eval-requirements.txt
 RUN pip install --no-cache-dir -r eval-requirements.txt

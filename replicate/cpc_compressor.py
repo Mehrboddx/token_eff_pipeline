@@ -56,9 +56,12 @@ Oversized sentences:
   accurate character spans, so nothing is dropped or duplicated.
 """
 
+import hashlib
+import itertools
 import math
 import sys
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 
 import pysbd
@@ -77,6 +80,41 @@ class ScoredSentence:
     score: float
 
 
+class _EmbeddingCache:
+    """LRU over per-chunk sentence embeddings, bounded by bytes. Sentence
+    embeddings depend only on their chunk (the question is embedded in a
+    separate pass), so a chunk that hasn't changed never needs re-encoding
+    -- in a live conversation, only the newest session's chunk does."""
+
+    def __init__(self, max_bytes: int) -> None:
+        self.max_bytes = max_bytes
+        self._items: OrderedDict[str, torch.Tensor] = OrderedDict()
+        self._bytes = 0
+        self.hits = 0
+        self.misses = 0
+
+    def get(self, key: str) -> torch.Tensor | None:
+        value = self._items.get(key)
+        if value is None:
+            self.misses += 1
+            return None
+        self.hits += 1
+        self._items.move_to_end(key)
+        return value
+
+    def put(self, key: str, value: torch.Tensor) -> None:
+        if key in self._items:
+            return
+        size = value.numel() * value.element_size()
+        if size > self.max_bytes:
+            return
+        self._items[key] = value
+        self._bytes += size
+        while self._bytes > self.max_bytes:
+            _, evicted = self._items.popitem(last=False)
+            self._bytes -= evicted.numel() * evicted.element_size()
+
+
 class CPCCompressor:
     def __init__(
         self,
@@ -89,11 +127,19 @@ class CPCCompressor:
         attn_implementation: str = "sdpa",  # avoids eager attention materializing
                                              # a full (seq_len x seq_len x heads) matrix
         chunk_safety_margin: int = 16,  # tokens reserved per chunk for special tokens
+        embedding_cache_bytes: int = 512 * 1024 * 1024,
+        # "bidirectional" is what the CPC LoRA was trained with; "causal"
+        # reproduces runs made before bidirectional attention was enforced.
+        attention: str = "bidirectional",
     ):
+        if attention not in ("bidirectional", "causal"):
+            raise ValueError(f"attention must be 'bidirectional' or 'causal', got {attention!r}")
+        self.attention = attention
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         print(self.device)
         self.max_seq_length = max_seq_length
         self.chunk_safety_margin = chunk_safety_margin
+        self.embedding_cache = _EmbeddingCache(embedding_cache_bytes)
 
         # Load the tokenizer FIRST: the CPC tokenizer has extra special tokens
         # (e.g. a mask token for MNTP training) beyond the base model's vocab,
@@ -111,7 +157,11 @@ class CPCCompressor:
             )
 
         config = AutoConfig.from_pretrained(base_model)
-        config.is_causal = False  # bidirectional attention, see prior discussion
+        # Not sufficient on its own: Llama/Mistral attention layers hardcode
+        # `self.is_causal = True` and never read this. Bidirectional attention
+        # is actually enforced in _embed_with_spans (explicit 4D mask) and by
+        # clearing each layer's flag below.
+        config.is_causal = False
 
         # We never call .generate() / do autoregressive decoding here — every
         # forward pass is a single one-shot encode. The KV cache buys nothing
@@ -139,6 +189,10 @@ class CPCCompressor:
 
         self.model = PeftModel.from_pretrained(base, lora_id)
         self.model.eval().to(self.device)
+        if self.attention == "bidirectional":
+            for module in self.model.modules():
+                if hasattr(module, "is_causal"):
+                    module.is_causal = False
 
         self._segmenter = pysbd.Segmenter(language="en", clean=False, char_span=True)
 
@@ -293,6 +347,12 @@ class CPCCompressor:
         )
         offset_mapping = enc.pop("offset_mapping")[0].tolist()
         enc = {k: v.to(self.device) for k, v in enc.items()}
+        if self.attention == "bidirectional":
+            # Full attention, which the CPC LoRA was trained with. A prepared
+            # 4D mask is passed through to attention untouched, and a
+            # non-None mask stops SDPA from applying its causal default.
+            seq_len = enc["input_ids"].shape[1]
+            enc["attention_mask"] = torch.ones((1, 1, seq_len, seq_len), dtype=torch.bool, device=self.device)
 
         outputs = self.model(**enc)
         token_embeddings = outputs.last_hidden_state[0].to("cpu", dtype=torch.float32)
@@ -325,6 +385,118 @@ class CPCCompressor:
 
     def _count_tokens(self, text: str) -> int:
         return len(self.tokenizer(text, add_special_tokens=False)["input_ids"])
+
+    # ---------- pre-split units (conversation memory) ----------
+
+    @staticmethod
+    def _layout_chunk(pieces: list[tuple[int, str, str]]) -> tuple[str, list[tuple[int, int]]]:
+        """Concatenate (unit, prefix, text) pieces into one chunk string and
+        return the char span of each piece's text. Prefixes (turn breaks,
+        role labels) give the encoder conversational structure but sit
+        outside every span, so they're never pooled into a sentence."""
+        parts: list[str] = []
+        spans: list[tuple[int, int]] = []
+        length = 0
+        for position, (_, prefix, text) in enumerate(pieces):
+            if position == 0:
+                prefix = prefix.lstrip("\n")
+            parts.append(prefix)
+            length += len(prefix)
+            spans.append((length, length + len(text)))
+            parts.append(text)
+            length += len(text)
+        return "".join(parts), spans
+
+    def _pack_group(self, pieces: list[tuple[int, str, str]], budget: int) -> list[list[tuple[int, str, str]]]:
+        """Balanced chunks for one group (session), each verified to fit."""
+        counts = [self._count_tokens(prefix + text) for _, prefix, text in pieces]
+        num_chunks = max(1, math.ceil(sum(counts) / budget))
+        while True:
+            buckets = self._pack_by_target_size(pieces, counts, num_chunks)
+            if all(self._count_tokens(self._layout_chunk(bucket)[0]) <= budget for bucket in buckets):
+                return buckets
+            num_chunks += 1
+            if num_chunks > len(pieces):
+                return [[piece] for piece in pieces]
+
+    def _chunk_embeddings(self, pieces: list[tuple[int, str, str]]) -> torch.Tensor:
+        """(len(pieces), hidden) piece embeddings for one chunk, cached by
+        the chunk's exact text and layout. A piece with no tokens gets a
+        zero vector (scores 0 against any query)."""
+        chunk_text, spans = self._layout_chunk(pieces)
+        key = hashlib.sha1((chunk_text + "\x00" + repr(spans)).encode("utf-8")).hexdigest()
+        cached = self.embedding_cache.get(key)
+        if cached is not None:
+            return cached
+
+        token_embeddings, offsets = self._embed_with_spans(chunk_text)
+        vectors = []
+        for start, end in spans:
+            vector = self._span_average(token_embeddings, offsets, start, end)
+            vectors.append(vector if vector is not None else torch.zeros(token_embeddings.shape[1]))
+        stacked = torch.stack(vectors).to(torch.float16)
+        self.embedding_cache.put(key, stacked)
+        return stacked
+
+    @torch.no_grad()
+    def embed_units(self, texts: list[str], prefixes: list[str], groups: list) -> torch.Tensor:
+        """Context-aware embeddings for pre-split units, (N, hidden), L2-normalized.
+
+        Chunks never cross a group boundary (consecutive units sharing a
+        group key, e.g. one chat session): a sentence is encoded in the
+        context of its own session rather than whatever arbitrary slice of
+        the haystack a flat chunker happened to cut. A group too long for
+        one chunk is split into balanced chunks like `compress()` does."""
+        budget = self.max_seq_length - self.chunk_safety_margin
+        pieces: list[tuple[int, str, str]] = []
+        for index, (text, prefix) in enumerate(zip(texts, prefixes)):
+            if self._count_tokens(prefix + text) <= budget:
+                pieces.append((index, prefix, text))
+                continue
+            split = self._split_oversized_sentence(text, 0, len(text), budget - self._count_tokens(prefix))
+            for position, (piece_text, _, _) in enumerate(split):
+                pieces.append((index, prefix if position == 0 else " ", piece_text))
+
+        chunks: list[list[tuple[int, str, str]]] = []
+        for _, run in itertools.groupby(pieces, key=lambda piece: groups[piece[0]]):
+            chunks.extend(self._pack_group(list(run), budget))
+
+        hidden = None
+        sums: dict[int, torch.Tensor] = {}
+        started = time.monotonic()
+        misses_before = self.embedding_cache.misses
+        for chunk_index, chunk in enumerate(chunks, start=1):
+            vectors = self._chunk_embeddings(chunk).to(torch.float32)
+            hidden = vectors.shape[1]
+            for (unit_index, _, _), vector in zip(chunk, vectors):
+                sums[unit_index] = sums[unit_index] + vector if unit_index in sums else vector
+            if chunk_index % 25 == 0 or chunk_index == len(chunks):
+                encoded = self.embedding_cache.misses - misses_before
+                print(
+                    f"  chunk {chunk_index}/{len(chunks)} ({encoded} encoded, "
+                    f"{chunk_index - encoded} cached, {time.monotonic() - started:.0f}s)",
+                    file=sys.stderr, flush=True,
+                )
+
+        embeddings = torch.zeros(len(texts), hidden or 1)
+        for unit_index, vector in sums.items():
+            embeddings[unit_index] = F.normalize(vector, dim=0)
+        return embeddings
+
+    @torch.no_grad()
+    def embed_query(self, query: str) -> torch.Tensor:
+        token_embeddings, offsets = self._embed_with_spans(query)
+        embedding = self._span_average(token_embeddings, offsets, 0, len(query))
+        if embedding is None:
+            raise ValueError("Could not embed query (empty after tokenization?).")
+        return embedding
+
+    @torch.no_grad()
+    def score_texts(self, texts: list[str], prefixes: list[str], groups: list, queries: list[str]) -> list[list[float]]:
+        """Cosine similarity of every unit to every query. Units are encoded
+        once no matter how many queries (e.g. sub-questions) are scored."""
+        embeddings = self.embed_units(texts, prefixes, groups)
+        return [(embeddings @ self.embed_query(query)).tolist() for query in queries]
 
     # ---------- public API ----------
 

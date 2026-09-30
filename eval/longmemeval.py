@@ -22,6 +22,7 @@ import os
 import random
 import re
 import sys
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -40,11 +41,14 @@ from huggingface_hub import hf_hub_download
 
 from core.agent import Agent
 from core.cpcCompressor import BASE_MODELS as CPC_BASE_MODELS
-from core.cpcCompressor import CPCCompressor
+from core.cpcCompressor import CPCCompressor, cpc_cache_key
 from core.geminiCompressor import GeminiCompressor
 from core.memory import Memory
 from core.runner import Runner
+from core.selection import SelectionConfig
 from core.tokenWise import TokenWise
+from eval.evidence import exact_evidence_recall, summarize_recall, text_matched_evidence_recall
+from eval.score_cache import CachedScorer
 from prompts.prompt import universal_agent_prompt
 
 load_dotenv()
@@ -84,32 +88,27 @@ def seed_memory_from_haystack(item):
     than through Runner — replaying them through the model would be both
     wrong (they're not this agent's own words) and enormously expensive.
 
-    Each turn is tagged with how many days before the question it happened,
-    computed from haystack_dates and question_date. Without this,
-    temporal-reasoning questions ("how many days ago...") are unanswerable
-    in principle — sessions mostly use relative phrasing ("today", "last
-    week"), so the model has no absolute date to anchor that to.
+    Each turn records how many days before the question it happened
+    (from haystack_dates and question_date). Without this, temporal
+    questions ("how many days ago...") are unanswerable in principle —
+    sessions mostly use relative phrasing ("today", "last week").
 
-    Two things ruled out first because they actively regressed retrieval:
-    - A separate "[Session date: ...]" marker sentence per session: short,
-      and every one contains the word "date", so on any date-related query
-      the word-overlap scorer (which normalizes by sentence length) ranks
-      it above genuinely relevant but longer sentences. ~20 markers alone
-      filled the entire compression budget on one test question, pushing
-      out all real content.
-    - Tagging real turns with the literal date string instead: same
-      problem in a different shape — every haystack date shares the same
-      year (and often nearby weekday abbreviations) with the injected
-      "today's date is ..." question prefix, so literally every tagged
-      sentence in the haystack got a free token-overlap match on "2023"
-      regardless of actual relevance.
-    A precomputed relative offset ("14 days before this question") avoids
-    both: it doesn't share vocabulary with a typical query (so it doesn't
-    inflate irrelevant sentences), and it only helps when the query
-    actually is about elapsed time (sharing a word like "days"), which is
-    exactly the case it needs to help."""
+    The date travels as metadata, not text: the raw history shown to the
+    answering model (recent turns, the uncompressed baseline) gets it as a
+    "(from N days before this question)" prefix, while the sentences a
+    compressor scores never contain it -- the compressor's renderer adds it
+    back once per selected session. Gluing the tag into the text used to
+    let the sentence splitter cut it off into a standalone "sentence" that
+    was almost free under the budget and scored well on any date-flavored
+    query: 36-55% of the CPC compression budget on temporal-reasoning and
+    knowledge-update questions went to bare tags.
+
+    `session` is the session's position, never its id: LongMemEval ids
+    for answer-bearing sessions start with "answer_", which would leak
+    the label if anything ever rendered it."""
     memory = Memory()
     dates = item.get("haystack_dates") or []
+    session_ids = item.get("haystack_session_ids") or []
     question_date = item.get("question_date")
     question_dt = None
     if question_date:
@@ -119,25 +118,37 @@ def seed_memory_from_haystack(item):
             question_dt = None
 
     for session_index, session in enumerate(item["haystack_sessions"]):
-        date_tag = ""
+        time_label = None
         if question_dt is not None and session_index < len(dates):
             try:
-                days_before = (question_dt - _parse_haystack_date(dates[session_index])).days
-                date_tag = f"(from {days_before} days before this question) "
+                # Calendar days, not elapsed 24h periods: flooring a
+                # timedelta drops a day whenever the session's clock time
+                # is later than the question's, turning "7 days between"
+                # into 6 on temporal questions.
+                days_before = (question_dt.date() - _parse_haystack_date(dates[session_index]).date()).days
+                time_label = f"{days_before} days before this question"
             except ValueError:
-                date_tag = ""
+                time_label = None
+        prefix = f"(from {time_label}) " if time_label else ""
 
         for turn in session:
             content = (turn.get("content") or "").strip()
             if not content:
                 continue
 
-            tagged_content = date_tag + content
+            meta = {
+                "session": session_index,
+                "time": time_label,
+                "has_answer": bool(turn.get("has_answer")),
+                "session_id": session_ids[session_index] if session_index < len(session_ids) else None,
+            }
             if turn.get("role") == "user":
-                memory.add_user_message(tagged_content)
+                memory.add_user_message(content, meta=meta, prefix=prefix)
             elif turn.get("role") == "assistant":
                 memory.add_model_content(
-                    types.Content(role="model", parts=[types.Part.from_text(text=tagged_content)])
+                    types.Content(role="model", parts=[types.Part.from_text(text=prefix + content)]),
+                    meta=meta,
+                    scored_text=content,
                 )
 
     return memory
@@ -195,34 +206,74 @@ def build_agent(project=PROJECT_ID, location=LOCATION):
     )
 
 
-def build_tokenwise(compressor: str, cpc_max_seq_length: int = 1536, cpc_preset: str = "llama",
-                     project=PROJECT_ID, location=LOCATION) -> TokenWise:
-    if compressor == "cpc":
-        return TokenWise(model=CPCCompressor(preset=cpc_preset, max_seq_length=cpc_max_seq_length))
-
-    if compressor == "gemini":
-        return TokenWise(model=GeminiCompressor(project=project, location=location, model=MODEL))
-
+def build_tokenwise(compressor: str, cpc_max_seq_length: int = 6144, cpc_preset: str = "llama",
+                     project=PROJECT_ID, location=LOCATION, selection=None, score_cache=None,
+                     cpc_attention="bidirectional"):
     if compressor == "none":
         return None
 
-    return TokenWise(use_openai_tokenizer=True)
+    if compressor == "gemini":
+        return TokenWise(model=GeminiCompressor(project=project, location=location, model=MODEL), selection=selection)
+
+    if compressor == "cpc":
+        def factory():
+            return CPCCompressor(preset=cpc_preset, max_seq_length=cpc_max_seq_length, attention=cpc_attention)
+
+        model = (
+            CachedScorer(factory, score_cache, cpc_cache_key(cpc_preset, cpc_max_seq_length, cpc_attention))
+            if score_cache else factory()
+        )
+        return TokenWise(model=model, selection=selection)
+
+    return TokenWise(selection=selection)
+
+
+@dataclass
+class CompressionSettings:
+    sentence_threshold: int = 20
+    token_budget: int = 500
+    recent_turns: int = 4
+    min_unit_words: int = 4
+
+
+def make_runner(agent, memory, tokenwise, settings):
+    return Runner(
+        agent, memory, tokenwise=tokenwise,
+        compression_sentence_threshold=settings.sentence_threshold,
+        compression_token_budget=settings.token_budget,
+        recent_turns=settings.recent_turns,
+        min_unit_words=settings.min_unit_words,
+    )
 
 
 NEEDS_QUESTION_DATE = {"temporal-reasoning", "knowledge-update"}
 
 
 def _question_with_date_tag(item):
-    """Same reasoning as seed_memory_from_haystack's date tags: only add
-    this for question types that actually need "now" to reason about
-    elapsed time or the most recent version of a fact -- the query is also
-    what TokenWise scores sentences against, so adding "today"/"date" to
-    every question would give every sentence that happens to mention a
-    date a free relevance boost on completely unrelated questions."""
+    """What the answering model is asked. Only question types that need
+    "now" (elapsed time, most recent version of a fact) get today's date --
+    kept identical to earlier runs so answer-side prompts stay comparable.
+    Compressors never score against this text; see retrieval_queries."""
     question = item["question"]
     if item.get("question_date") and item.get("question_type") in NEEDS_QUESTION_DATE:
         question = f"(Today's date is {item['question_date']}.) {question}"
     return question
+
+
+def retrieval_queries(item, decompositions=None):
+    """What compressors score against: the bare question (a date prefix
+    would pull every date-bearing sentence up the ranking), plus any
+    sub-queries from --decompositions for multi-query scoring."""
+    return [item["question"], *((decompositions or {}).get(item["question_id"]) or [])]
+
+
+def compression_info(runner, memory, item, mode):
+    last = runner.last_compression
+    return {
+        "compressed_tokens": last["result"].tokens if last else None,
+        "candidate_units": last["candidates"] if last else None,
+        "evidence": exact_evidence_recall(memory, item, last, mode),
+    }
 
 
 def _compressed_context_from_described(described, mode):
@@ -233,34 +284,30 @@ def _compressed_context_from_described(described, mode):
     return None
 
 
-def compress_question(item, tokenwise, compression_sentence_threshold, compression_token_budget, recent_turns):
+def compress_question(item, tokenwise, settings, decompositions=None, seeded_memory=None):
     """The compression half of answer_question, split out so it can run
     without ever touching the answering model -- see --stage compress.
     Lets compression (GPU-bound, e.g. Mistral) run on one machine, and
     answering (one Gemini API call, no GPU) run on another that has
     working Vertex AI credentials but no local GPU at all.
 
-    Returns (described_history, mode, question) -- described_history is
-    Agent.describe_history()'s JSON-serializable [{role, kind, text}, ...]
-    form (reused rather than inventing a second serialization), mode is
-    "compressed_history"/"full_history", and question is the actual
-    (possibly date-tagged) text used, for logging."""
-    memory = seed_memory_from_haystack(item)
-    runner = Runner(
-        None, memory, tokenwise=tokenwise,
-        compression_sentence_threshold=compression_sentence_threshold,
-        compression_token_budget=compression_token_budget,
-        recent_turns=recent_turns,
-    )
+    `seeded_memory` lets a caller that compresses the same item many times
+    (eval/ablate.py) seed it once; it's copied, never mutated.
+
+    Returns (described_history, mode, question, info) -- described_history
+    is Agent.describe_history()'s JSON-serializable [{role, kind, text}, ...]
+    form, mode is "compressed_history"/"full_history", question is the
+    (possibly date-tagged) text the answering model gets, and info holds
+    compressed-token counts and evidence recall."""
+    memory = seeded_memory.copy() if seeded_memory is not None else seed_memory_from_haystack(item)
+    runner = make_runner(None, memory, tokenwise, settings)
     question = _question_with_date_tag(item)
 
     previous_sentences = memory.get_sentences()
     memory.add_user_message(question)
-    if runner.tokenwise is not None:
-        runner.tokenwise.set_sentences(memory.get_sentences())
-    history, mode = runner._build_history(question, previous_sentences)
+    history, mode = runner._build_history(question, previous_sentences, retrieval_queries(item, decompositions))
 
-    return Agent.describe_history(history), mode, question
+    return Agent.describe_history(history), mode, question, compression_info(runner, memory, item, mode)
 
 
 def answer_from_compressed(agent, described_history):
@@ -279,16 +326,9 @@ def answer_from_compressed(agent, described_history):
     return response.text or ""
 
 
-def answer_question(agent, item, tokenwise, compression_sentence_threshold, compression_token_budget, recent_turns):
+def answer_question(agent, item, tokenwise, settings, decompositions=None):
     memory = seed_memory_from_haystack(item)
-    runner = Runner(
-        agent,
-        memory,
-        tokenwise=tokenwise,
-        compression_sentence_threshold=compression_sentence_threshold,
-        compression_token_budget=compression_token_budget,
-        recent_turns=recent_turns,
-    )
+    runner = make_runner(agent, memory, tokenwise, settings)
     question = _question_with_date_tag(item)
 
     # Capture what the compressor actually produced for this question, via
@@ -308,12 +348,13 @@ def answer_question(agent, item, tokenwise, compression_sentence_threshold, comp
 
     agent.context_monitor = capture_context
     try:
-        response = runner.run(question)
+        response = runner.run(question, retrieval_queries=retrieval_queries(item, decompositions))
     finally:
         agent.context_monitor = None
 
-    compressed_context = _compressed_context_from_described(captured.get("history"), captured.get("mode"))
-    return response.text or "", captured.get("mode"), compressed_context
+    mode = captured.get("mode")
+    compressed_context = _compressed_context_from_described(captured.get("history"), mode)
+    return response.text or "", mode, compressed_context, compression_info(runner, memory, item, mode)
 
 
 def summarize(name, rows):
@@ -664,6 +705,8 @@ def run_answer_stage(args, log_dir):
                 "correct": correct,
                 "compression_mode": crow.get("compression_mode"),
                 "compressed_context": compressed_context,
+                "compressed_tokens": crow.get("compressed_tokens"),
+                "evidence": crow.get("evidence"),
             }
             results.setdefault(row["config"], []).append(row)
             log({"event": "result", **row})
@@ -675,6 +718,7 @@ def run_answer_stage(args, log_dir):
         summary = {}
         for name, rows in results.items():
             summarize(name, rows)
+            summarize_recall(name, rows)
             total = len(rows)
             passed = sum(row["correct"] for row in rows)
             by_type = {}
@@ -691,6 +735,123 @@ def run_answer_stage(args, log_dir):
         log({"event": "run_end", "summary": summary})
 
     print(f"\nFull results (including untruncated predictions) saved to {log_path}")
+
+
+def selection_from_args(args):
+    return SelectionConfig(
+        lexical_weight=args.lexical_weight,
+        recency_weight=args.recency_weight,
+        mmr_lambda=args.mmr_lambda,
+        mmr_similarity=args.mmr_similarity,
+        top_sessions=args.top_sessions,
+        window=args.window,
+        pair_turns=args.pair_turns,
+    )
+
+
+def load_decompositions(path):
+    if not path:
+        return None
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def describe_evidence(info):
+    evidence = (info or {}).get("evidence")
+    if not evidence or not evidence["evidence_turns"]:
+        return ""
+    tokens = info.get("compressed_tokens")
+    return (f"[evidence {evidence['evidence_turns_kept']}/{evidence['evidence_turns']} turns"
+            f"{f', {tokens} tok' if tokens is not None else ''}]")
+
+
+def run_recall_stage(args):
+    """--stage recall: text-matched evidence recall for every row of an
+    existing log -- including logs written before compressors recorded
+    their selections, so old and new runs can be compared on the same
+    footing. No model calls; only the dataset's evidence labels."""
+    if not args.from_log:
+        raise SystemExit("--stage recall requires --from-log <path to a compress/answer/full log>")
+
+    import tiktoken
+
+    encoding = tiktoken.encoding_for_model("gpt-4")
+    from_log_path = Path(args.from_log)
+    run_start, rows = load_run_log(from_log_path)
+    recent_turns = (run_start or {}).get("recent_turns") or args.recent_turns
+    items = {item["question_id"]: item for item in load_longmemeval()}
+    print(f"Text-matched evidence recall for {from_log_path} ({len(rows)} rows, recent_turns={recent_turns})")
+
+    by_config = {}
+    for row in rows:
+        mode = row.get("compression_mode")
+        item = items.get(row["question_id"])
+        if mode is None or item is None:
+            continue
+        context = row.get("compressed_context")
+        if context is None:
+            context = _compressed_context_from_described(row.get("history"), mode)
+        context = (context or "").removeprefix("Relevant earlier context:\n")
+        by_config.setdefault(row["config"], []).append({
+            "question_type": row["question_type"],
+            "evidence": text_matched_evidence_recall(item, context, mode, recent_turns),
+            "compressed_tokens": len(encoding.encode(context, disallowed_special=())) if mode == "compressed_history" else None,
+        })
+
+    for name, measured in by_config.items():
+        summarize_recall(f"{name} (text-matched)", measured)
+
+
+DECOMPOSE_PROMPT = (
+    "A retrieval system searches a user's long chat history with an AI assistant to answer "
+    "the question below. Rewrite the question as 1 to 3 short, standalone search queries, one "
+    "per distinct fact that must be found in the history (for example: each event whose date "
+    "is needed, each item being counted or compared, the old and the new value of something "
+    "that changed). If one fact suffices, return a single query. Do not answer the question.\n"
+    "Return only a JSON array of strings.\n\nQuestion: {question}"
+)
+
+
+def run_decompose_stage(args):
+    """--stage decompose: one Gemini call per sampled question, producing
+    the sub-queries --decompositions feeds to multi-query scoring. Written
+    after every question and resumable: already-decomposed ids are skipped."""
+    if not args.decompositions:
+        raise SystemExit("--stage decompose requires --decompositions <output JSON path>")
+    if not args.project:
+        raise SystemExit("--stage decompose calls Gemini: pass --project (or set GOOGLE_CLOUD_PROJECT)")
+
+    from google import genai
+
+    path = Path(args.decompositions)
+    decompositions = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    question_types = args.question_types.split(",") if args.question_types else None
+    items = load_longmemeval(limit=args.limit, seed=args.seed, question_types=question_types)
+    client = genai.Client(
+        vertexai=True, project=args.project, location=args.location,
+        http_options=types.HttpOptions(timeout=120_000),
+    )
+    config = types.GenerateContentConfig(temperature=0, response_mime_type="application/json")
+
+    for index, item in enumerate(items, start=1):
+        if item["question_id"] in decompositions:
+            continue
+        prompt = DECOMPOSE_PROMPT.format(question=item["question"])
+        try:
+            response = client.models.generate_content(
+                model=MODEL,
+                contents=[types.Content(role="user", parts=[types.Part.from_text(text=prompt)])],
+                config=config,
+            )
+            parsed = json.loads(response.text or "[]")
+            queries = [q.strip() for q in parsed if isinstance(q, str) and q.strip()][:3]
+        except Exception as exc:
+            print(f"[{index}/{len(items)}] {item['question_id']}: failed ({exc}); skipping", flush=True)
+            continue
+        decompositions[item["question_id"]] = queries
+        path.write_text(json.dumps(decompositions, indent=1), encoding="utf-8")
+        print(f"[{index}/{len(items)}] {item['question'][:90]!r} -> {queries}", flush=True)
+
+    print(f"\n{len(decompositions)} decompositions saved to {path}")
 
 
 def main():
@@ -718,13 +879,12 @@ def main():
              "'baseline_full_history' just like --compare-baseline's second config.",
     )
     parser.add_argument(
-        "--cpc-max-seq-length", type=int, default=1536,
+        "--cpc-max-seq-length", type=int, default=6144,
         help="Per-chunk token budget for the CPC compressor's forward pass (only applies to "
-             "--compressor cpc). The replicate/ default (6144) needs more VRAM than an 8GB "
-             "card comfortably has for LongMemEval-sized haystacks -- once VRAM is nearly "
-             "full, Windows silently pages GPU memory to system RAM, turning a ~1s forward "
-             "pass into tens of minutes. 1536 keeps peak usage around 3GB (more, smaller "
-             "chunks per haystack, but each one fast) -- raise it if you have a bigger GPU.",
+             "--compressor cpc). 6144 is the length the CPC LoRA was trained at "
+             "(cpc-1.0-*.json), so most sessions fit in one chunk. On an 8GB card this "
+             "can exhaust VRAM (Windows then pages GPU memory to system RAM, making each "
+             "forward pass take minutes) -- pass 1536 there instead.",
     )
     parser.add_argument(
         "--cpc-preset",
@@ -734,6 +894,11 @@ def main():
              "see core/cpcCompressor.py). 'llama' is unsloth/Llama-3.2-1B-Instruct -- runs on "
              "an 8GB laptop GPU. 'mistral' is mistralai/Mistral-7B-Instruct-v0.2 -- a full 7B "
              "model, well beyond an 8GB card; run it on Vertex AI instead (see eval/deploy.sh).",
+    )
+    parser.add_argument(
+        "--cpc-attention", choices=["bidirectional", "causal"], default="bidirectional",
+        help="CPC encoder attention. 'bidirectional' is what the CPC LoRA was trained with; "
+             "'causal' reproduces runs made before it was enforced (for the before/after comparison).",
     )
     parser.add_argument(
         "--compare-baseline", action="store_true",
@@ -771,7 +936,7 @@ def main():
     )
     parser.add_argument(
         "--stage",
-        choices=["full", "compress", "answer", "judge"],
+        choices=["full", "compress", "answer", "judge", "decompose", "recall"],
         default="full",
         help="'full' (default): compress and answer in one pass. 'compress': only run the "
              "compressor and log the resulting context -- no Gemini call, no GCP credentials "
@@ -785,13 +950,45 @@ def main():
              "much less likely to mark a correct-but-differently-worded answer wrong. Left at "
              "the default ('full') with no --project/GOOGLE_CLOUD_PROJECT set, this "
              "automatically falls back to 'compress': Gemini isn't reachable anyway, so there's "
-             "no reason to fail loudly instead of just doing the half that still works.",
+             "no reason to fail loudly instead of just doing the half that still works. "
+             "'decompose': ask Gemini to split each sampled question into sub-queries and write "
+             "them to --decompositions (for multi-query scoring). 'recall': text-matched "
+             "evidence recall of an existing log's compressed contexts (--from-log) -- works on "
+             "logs from before selections were recorded; no model calls.",
     )
     parser.add_argument(
         "--from-log", default=None, metavar="PATH",
         help="A --stage compress log to read compressed histories from (required for --stage "
-             "answer), or a --stage full/answer log to re-grade (required for --stage judge).",
+             "answer), a --stage full/answer log to re-grade (required for --stage judge), or "
+             "any compress/answer/full log to measure (--stage recall).",
     )
+    selection = parser.add_argument_group(
+        "selection", "How scored sentences become the compressed context (extractive compressors)."
+    )
+    selection.add_argument("--min-unit-words", type=int, default=4,
+                           help="Merge sentence fragments shorter than this many words into a "
+                                "neighbour from the same turn.")
+    selection.add_argument("--lexical-weight", type=float, default=0.0,
+                           help="Hybrid scoring: weight of BM25 in the fused score (0 = off).")
+    selection.add_argument("--recency-weight", type=float, default=0.0,
+                           help="Additive bonus (z units) for later sentences (0 = off).")
+    selection.add_argument("--mmr", type=float, default=0.0, dest="mmr_lambda",
+                           help="MMR redundancy penalty (z units per unit of similarity; 0 = off).")
+    selection.add_argument("--mmr-similarity", choices=["lexical", "semantic"], default="lexical",
+                           help="How MMR measures redundancy: word overlap, or cosine of CPC's own "
+                                "sentence embeddings (centered on the candidate pool; --compressor cpc only).")
+    selection.add_argument("--top-sessions", type=int, default=0,
+                           help="Two-level selection: only select from the K best-scoring sessions (0 = off).")
+    selection.add_argument("--window", type=int, default=0,
+                           help="Also include +-N neighbouring sentences of the same turn.")
+    selection.add_argument("--pair-turns", action="store_true",
+                           help="Also include the best sentence of the partner turn (reply/prompt).")
+    selection.add_argument("--decompositions", default=None, metavar="PATH",
+                           help="JSON {question_id: [sub-queries]} (from --stage decompose): score "
+                                "against each sub-query too, max-pooled.")
+    selection.add_argument("--score-cache", default=None, metavar="DIR",
+                           help="CPC only: cache scores on disk keyed by the exact candidate units, "
+                                "so re-runs with different selection settings skip the GPU entirely.")
     args = parser.parse_args()
 
     log_dir = Path(args.log_dir)
@@ -828,6 +1025,14 @@ def main():
         run_judge_stage(args, log_dir)
         return
 
+    if args.stage == "recall":
+        run_recall_stage(args)
+        return
+
+    if args.stage == "decompose":
+        run_decompose_stage(args)
+        return
+
     existing_results = []
     if args.resume is not None:
         run_number = args.resume
@@ -860,6 +1065,11 @@ def main():
             args.cpc_max_seq_length = run_start["cpc_max_seq_length"]
         if run_start.get("cpc_preset") is not None:
             args.cpc_preset = run_start["cpc_preset"]
+        for key, value in (run_start.get("selection") or {}).items():
+            setattr(args, key, value)
+        for key in ("min_unit_words", "decompositions", "score_cache", "cpc_attention"):
+            if key in run_start:
+                setattr(args, key, run_start[key])
         args.compare_baseline = len(run_start.get("configs", [])) > 1
         print(f"Resuming run {run_number} ({log_path}): "
               f"{len(existing_results)} (config, question) results already logged")
@@ -877,9 +1087,13 @@ def main():
     # missing/invalid project.
     agent = build_agent(project=args.project, location=args.location) if args.stage != "compress" else None
 
+    selection_config = selection_from_args(args)
+    settings = CompressionSettings(args.sentence_threshold, args.token_budget, args.recent_turns, args.min_unit_words)
+    decompositions = load_decompositions(args.decompositions)
     tokenwise = build_tokenwise(
         args.compressor, cpc_max_seq_length=args.cpc_max_seq_length, cpc_preset=args.cpc_preset,
-        project=args.project, location=args.location,
+        project=args.project, location=args.location, selection=selection_config, score_cache=args.score_cache,
+        cpc_attention=args.cpc_attention,
     )
     primary_name = "baseline_full_history" if args.compressor == "none" else f"compressed_{args.compressor}"
     configs = [(primary_name, tokenwise)]
@@ -920,9 +1134,14 @@ def main():
             "cpc_preset": args.cpc_preset if args.compressor == "cpc" else None,
             "cpc_base_model": CPC_BASE_MODELS.get(args.cpc_preset) if args.compressor == "cpc" else None,
             "cpc_max_seq_length": args.cpc_max_seq_length if args.compressor == "cpc" else None,
+            "cpc_attention": args.cpc_attention if args.compressor == "cpc" else None,
             "token_budget": args.token_budget,
             "sentence_threshold": args.sentence_threshold,
             "recent_turns": args.recent_turns,
+            "min_unit_words": args.min_unit_words,
+            "selection": asdict(selection_config),
+            "decompositions": args.decompositions,
+            "score_cache": args.score_cache,
             "configs": [name for name, _ in configs],
         })
 
@@ -938,11 +1157,9 @@ def main():
             for name, tokenwise in pending_configs:
                 if args.stage == "compress":
                     try:
-                        described, mode, question = compress_question(
-                            item, tokenwise, args.sentence_threshold, args.token_budget, args.recent_turns,
-                        )
+                        described, mode, question, info = compress_question(item, tokenwise, settings, decompositions)
                     except Exception as exc:
-                        described, mode, question = [], None, f"[ERROR: {exc}]"
+                        described, mode, question, info = [], None, f"[ERROR: {exc}]", {}
 
                     row = {
                         "config": name,
@@ -952,19 +1169,19 @@ def main():
                         "reference": item["answer"],
                         "compression_mode": mode,
                         "history": described,
+                        **info,
                     }
                     results[name].append(row)
                     log({"event": "result", **row})
-                    print(f"  [{name}] compressed (mode={mode})", flush=True)
+                    print(f"  [{name}] compressed (mode={mode}) {describe_evidence(info)}", flush=True)
                     continue
 
                 try:
-                    predicted, compression_mode, compressed_context = answer_question(
-                        agent, item, tokenwise,
-                        args.sentence_threshold, args.token_budget, args.recent_turns,
+                    predicted, compression_mode, compressed_context, info = answer_question(
+                        agent, item, tokenwise, settings, decompositions,
                     )
                 except Exception as exc:
-                    predicted, compression_mode, compressed_context = f"[ERROR: {exc}]", None, None
+                    predicted, compression_mode, compressed_context, info = f"[ERROR: {exc}]", None, None, {}
 
                 correct = grade(predicted, item["answer"])
                 row = {
@@ -977,25 +1194,30 @@ def main():
                     "correct": correct,
                     "compression_mode": compression_mode,
                     "compressed_context": compressed_context,
+                    **info,
                 }
                 results[name].append(row)
                 log({"event": "result", **row})
 
                 status = "PASS" if correct else "FAIL"
-                print(f"  [{name}] {status} | ref: {item['answer']!r} | got: {predicted[:150]!r}", flush=True)
+                print(f"  [{name}] {status} {describe_evidence(info)} | ref: {item['answer']!r} | "
+                      f"got: {predicted[:150]!r}", flush=True)
 
         print("\n=== Summary ===")
         if args.stage == "compress":
             compressed_counts = {name: len(rows) for name, rows in results.items()}
+            recall = {}
             for name, count in compressed_counts.items():
                 print(f"{name}: compressed {count} questions")
+                recall[name] = summarize_recall(name, results[name])
             print(f"\nAnswer these later (needs Vertex AI credentials, no GPU) with:")
             print(f"  python -m eval.longmemeval --stage answer --from-log {log_path} --project <project>")
-            log({"event": "run_end", "compressed": compressed_counts})
+            log({"event": "run_end", "compressed": compressed_counts, "evidence_recall": recall})
         else:
             summary = {}
             for name, rows in results.items():
                 summarize(name, rows)
+                summarize_recall(name, rows)
                 total = len(rows)
                 passed = sum(row["correct"] for row in rows)
                 by_type = {}

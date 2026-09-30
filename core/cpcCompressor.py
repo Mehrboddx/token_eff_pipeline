@@ -1,31 +1,33 @@
-from typing import Any
+from typing import Any, Dict, List, Sequence
+
+import numpy as np
 
 from core.tokenWise import TokenWise
-from replicate.cpc_compressor import CPCCompressor as _CPCCompressor
+from core.units import Unit, role_label
 
 # TokenWise.PRETRAINED_PRESETS carries the tokenizer + LoRA adapter for each
-# preset but not the base model id, since TokenWise's own pretrained loader
-# takes base_model_name_or_path as a separate argument (the base model isn't
-# part of what the CPC LoRA/tokenizer publish "own" -- it's whatever they
-# were fine-tuned on top of). Each entry here was read directly out of the
-# corresponding LoRA adapter's adapter_config.json (base_model_name_or_path)
+# preset but not the base model id. Each entry here was read directly out of
+# the corresponding LoRA adapter's adapter_config.json (base_model_name_or_path)
 # on the Hub, not guessed.
 BASE_MODELS = {
     "llama": "unsloth/Llama-3.2-1B-Instruct",
     "mistral": "mistralai/Mistral-7B-Instruct-v0.2",
 }
 
+# Bump when the way units are laid out into chunks changes, so cached
+# scores from an older layout are never reused.
+LAYOUT_VERSION = "session-chunks-v1"
+
+
+def cpc_cache_key(preset: str, max_seq_length: int, attention: str = "bidirectional") -> str:
+    return f"cpc-{preset}-{max_seq_length}-{attention}-{LAYOUT_VERSION}"
+
 
 class CPCCompressor:
-    """Adapts replicate/cpc_compressor.py's CPCCompressor (context-aware,
-    embedding-based sentence scoring via a bidirectional-attention forward
-    pass) to the `model.compress(query, token_budget, context)` interface
-    TokenWise delegates to -- the same interface GeminiCompressor implements,
-    so this can be dropped in as `TokenWise(model=CPCCompressor())`.
-
-    Reuses the replicate/ implementation directly instead of reimplementing
-    the chunking/embedding pipeline a second time, so there's one copy of
-    that logic instead of two that can drift apart."""
+    """Scores history units with replicate/cpc_compressor.py's context-aware
+    sentence embeddings, behind the `score_units(units, queries)` interface
+    TokenWise uses for extractive scorers. Reuses the replicate/
+    implementation directly so there's one copy of the encoding logic."""
 
     def __init__(self, preset: str = "llama", **kwargs: Any) -> None:
         if preset not in TokenWise.PRETRAINED_PRESETS or preset not in BASE_MODELS:
@@ -37,20 +39,41 @@ class CPCCompressor:
         kwargs.setdefault("lora_id", preset_spec["lora_name_or_path"])
         kwargs.setdefault("tokenizer_id", preset_spec["tokenizer_name_or_path"])
 
-        # Loads the base model + LoRA adapter onto GPU/CPU -- expensive, so
-        # only pay for it when the CPC backend is actually selected (this
-        # class shouldn't be instantiated otherwise). Mistral-7B in
-        # particular needs far more VRAM than the 1B Llama preset -- not
-        # realistic on an 8GB laptop GPU, see eval/deploy.sh for running it
-        # on a Vertex AI GPU instead.
+        # Imported here, not at module level, so code that only needs this
+        # module's constants (e.g. a CPU-only ablation over cached scores)
+        # doesn't pull in torch. Loading the base model + LoRA is expensive;
+        # Mistral-7B needs far more VRAM than an 8GB laptop GPU -- see
+        # eval/deploy.sh for running it on a Vertex AI GPU instead.
+        from replicate.cpc_compressor import CPCCompressor as _CPCCompressor
+
         self._compressor = _CPCCompressor(**kwargs)
 
-    def compress(self, query: str, token_budget: int, context: str) -> str:
-        if not context or not context.strip():
-            return ""
+    @staticmethod
+    def unit_prefixes(units: Sequence[Unit]) -> List[str]:
+        """A turn break + role label before the first sentence of each turn,
+        a space otherwise -- conversational structure for the encoder."""
+        prefixes = []
+        previous_entry = None
+        for unit in units:
+            prefixes.append(f"\n{role_label(unit)} " if unit.entry_index != previous_entry else " ")
+            previous_entry = unit.entry_index
+        return prefixes
 
-        return self._compressor.compress(
-            context=context,
-            question=query,
-            compression_target_tokens=token_budget,
+    def score_units(self, units: Sequence[Unit], queries: Sequence[str]) -> List[List[float]]:
+        return self._compressor.score_texts(
+            [unit.text for unit in units],
+            self.unit_prefixes(units),
+            [unit.session for unit in units],
+            list(queries),
         )
+
+    def unit_embeddings(self, units: Sequence[Unit], ids: Sequence[int]) -> Dict[int, np.ndarray]:
+        """Context-aware sentence embeddings for the given unit ids, for
+        meaning-based MMR. Chunks just scored are served from the
+        compressor's embedding cache, so this costs no extra encoding."""
+        embeddings = self._compressor.embed_units(
+            [unit.text for unit in units],
+            self.unit_prefixes(units),
+            [unit.session for unit in units],
+        )
+        return {index: embeddings[index].numpy() for index in ids}

@@ -45,7 +45,7 @@ fi
 
 # ---- eval/longmemeval.py args ----
 CPC_PRESET="${CPC_PRESET:-mistral}"       # the whole reason to run this on Vertex instead of locally
-CPC_MAX_SEQ_LENGTH="${CPC_MAX_SEQ_LENGTH:-}"  # blank = script default (1536)
+CPC_MAX_SEQ_LENGTH="${CPC_MAX_SEQ_LENGTH:-}"  # blank = script default (6144)
 LIMIT="${LIMIT:-500}"
 SEED="${SEED:-42}"
 QUESTION_TYPES="${QUESTION_TYPES:-}"      # e.g. "multi-session,knowledge-update", blank = no filter

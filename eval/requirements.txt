@@ -1,9 +1,11 @@
-# torch/torchvision are installed separately in Dockerfile.eval from the
-# cu126 wheel index (same as replicate/dockerfile), since they're not on
-# PyPI in that build.
+# torch is installed separately (Dockerfile.eval, eval/setup_gpu_machine.sh)
+# from the cu128 wheel index -- CUDA 12.8 builds are the first to support
+# Blackwell GPUs (RTX 50xx), and they also run on older cards.
 pysbd
 peft
 transformers
+tiktoken
+numpy
 google-genai
 google-cloud-storage
 huggingface_hub

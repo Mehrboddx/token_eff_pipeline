@@ -57,8 +57,10 @@ fi
 source .venv/bin/activate
 pip install --upgrade pip
 
-echo "-- Installing torch (cu126 wheels, same as Dockerfile.eval)..."
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+# cu128: the first CUDA builds with Blackwell (RTX 50xx, e.g. a 5090)
+# kernels; cu126 wheels fail there with "no kernel image is available".
+echo "-- Installing torch (cu128 wheels, same as Dockerfile.eval)..."
+pip install torch --index-url https://download.pytorch.org/whl/cu128
 
 echo "-- Installing eval/requirements.txt..."
 pip install -r eval/requirements.txt
@@ -80,12 +82,10 @@ echo
 echo "Either way, set which project to bill the Gemini calls to:"
 echo "  export GOOGLE_CLOUD_PROJECT=<your-project-id>"
 echo
-echo "Then run the eval, e.g. (1B Llama preset, fits on a single 4090 easily):"
+echo "Then check bidirectional attention and run the full CPC suite:"
 echo "  source .venv/bin/activate"
-echo "  python -m eval.longmemeval --compressor cpc --cpc-preset llama --limit 25"
-echo
-echo "Once that looks right, scale up to Mistral and the full corpus:"
-echo "  python -m eval.longmemeval --compressor cpc --cpc-preset mistral --limit 500"
+echo "  python -m eval.check_bidirectional --cpc-preset mistral"
+echo "  bash eval/run_cpc_suite.sh        (see the top of that file for its settings)"
 echo
 echo "Safe to Ctrl+C anytime -- resume with:"
 echo "  python -m eval.longmemeval --resume <run_number>   (printed at the start of the run)"
