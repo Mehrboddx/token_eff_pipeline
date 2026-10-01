@@ -409,6 +409,27 @@ def run_tag(stage, settings):
     return re.sub(r"[^A-Za-z0-9._-]", "-", "_".join(parts))
 
 
+# Answer and judge results live in their own folders under the SAME file
+# name as the log they were made from, so one compress run's answers and
+# verdicts are found by name instead of by a new run number.
+ANSWER_DIR = "gemini_runs"
+JUDGE_DIR = "judge_runs"
+
+
+def stage_output(log_dir, subdir, from_log_path, from_run_start):
+    """(run_number, path, results already there) for an answer/judge stage
+    reading `from_log_path`. Re-running the same command continues that
+    file, skipping questions it already holds."""
+    path = Path(log_dir) / subdir / from_log_path.name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = load_run_log(path)[1] if path.exists() else []
+    if existing:
+        print(f"Continuing {path}: {len(existing)} results already logged")
+    else:
+        print(f"Logging full per-question results to {path}")
+    return from_run_start.get("run"), path, existing
+
+
 def new_log_path(log_dir, run_number, stage, settings):
     return log_dir / f"eval_longmemeval_run{run_number:04d}_{run_tag(stage, settings)}.jsonl"
 
@@ -583,16 +604,17 @@ def run_judge_stage(args, log_dir):
 
     from_log_path = Path(args.from_log)
     from_run_start, answered_rows = load_run_log(from_log_path)
-    answered_rows = [row for row in answered_rows if "predicted" in row]
+    # Newest row per question: a continued answer run re-answers questions
+    # whose earlier attempt was an [ERROR], appending the retry after it.
+    latest = {(row["config"], row["question_id"]): row for row in answered_rows if "predicted" in row}
+    answered_rows = list(latest.values())
     if not answered_rows:
         raise SystemExit(f"{from_log_path} has no answered result rows (predicted/reference) to judge")
     print(f"Loaded {len(answered_rows)} answered questions from {from_log_path}")
     source_settings = _resolve_source_settings(from_log_path, from_run_start)
 
     if args.resume is None:
-        run_number = _next_run_number(log_dir, gcs_uri=args.log_gcs_uri)
-        log_path = new_log_path(log_dir, run_number, "judge", source_settings)
-        print(f"Logging full per-question results to {log_path}")
+        run_number, log_path, existing_results = stage_output(log_dir, JUDGE_DIR, from_log_path, from_run_start)
 
     from google import genai
     from google.genai import types as genai_types
@@ -617,7 +639,7 @@ def run_judge_stage(args, log_dir):
                 log_gcs_blob.upload_from_filename(str(log_path))
 
         log({
-            "event": "run_resume" if args.resume is not None else "run_start",
+            "event": "run_resume" if args.resume is not None or existing_results else "run_start",
             "run": run_number,
             "stage": "judge",
             "model": MODEL,
@@ -714,13 +736,14 @@ def run_answer_stage(args, log_dir):
     source_settings = _resolve_source_settings(from_log_path, from_run_start)
 
     if args.resume is None:
-        run_number = _next_run_number(log_dir, gcs_uri=args.log_gcs_uri)
-        log_path = new_log_path(log_dir, run_number, "answer", source_settings)
-        print(f"Logging full per-question results to {log_path}")
+        run_number, log_path, existing_results = stage_output(log_dir, ANSWER_DIR, from_log_path, from_run_start)
 
     agent = build_agent(project=args.project, location=args.location)
     log_gcs_blob = _gcs_blob(args.log_gcs_uri, log_path.name) if args.log_gcs_uri else None
 
+    # A failed Gemini call (quota, auth, network) is retried on the next run
+    # rather than counted as an answer; its newer row supersedes it.
+    existing_results = [row for row in existing_results if not str(row.get("predicted", "")).startswith("[ERROR")]
     already_done = {(row["config"], row["question_id"]) for row in existing_results}
     results = {}
     for row in existing_results:
@@ -734,7 +757,7 @@ def run_answer_stage(args, log_dir):
                 log_gcs_blob.upload_from_filename(str(log_path))
 
         log({
-            "event": "run_resume" if args.resume is not None else "run_start",
+            "event": "run_resume" if args.resume is not None or existing_results else "run_start",
             "run": run_number,
             "stage": "answer",
             "model": MODEL,
@@ -1170,7 +1193,7 @@ def main():
                 log_gcs_blob.upload_from_filename(str(log_path))
 
         log({
-            "event": "run_resume" if args.resume is not None else "run_start",
+            "event": "run_resume" if args.resume is not None or existing_results else "run_start",
             "run": run_number,
             "stage": args.stage,
             # The model used wherever this run calls Gemini: answering
