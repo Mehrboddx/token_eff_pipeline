@@ -440,6 +440,9 @@ def find_run_log(log_dir, run_number, gcs_uri=None):
     Vertex AI container starts with an empty local logs/)."""
     local = [path for path in log_dir.glob(f"eval_longmemeval_run{run_number:04d}*.jsonl")
              if (match := RUN_LOG_PATTERN.match(path.name)) and int(match.group(1)) == run_number]
+    if len(local) > 1:
+        names = "\n  ".join(sorted(path.name for path in local))
+        raise SystemExit(f"--resume {run_number} matches {len(local)} logs; pass the one you mean by path:\n  {names}")
     if local:
         return local[0]
 
@@ -459,6 +462,18 @@ def find_run_log(log_dir, run_number, gcs_uri=None):
 
     raise SystemExit(f"--resume {run_number}: no eval_longmemeval_run{run_number:04d}*.jsonl in {log_dir}"
                      + (f" or {gcs_uri}" if gcs_uri else ""))
+
+
+def resolve_resume(log_dir, ref, gcs_uri=None):
+    """(run_number, log path) for --resume, given a run number or a log's path."""
+    ref = str(ref)
+    if ref.isdigit():
+        return int(ref), find_run_log(log_dir, int(ref), gcs_uri)
+    path = Path(ref)
+    if not path.exists():
+        raise SystemExit(f"--resume {ref}: no such run number or log file")
+    match = RUN_LOG_PATTERN.match(path.name)
+    return (int(match.group(1)) if match else None), path
 
 
 def load_run_log(log_path):
@@ -590,8 +605,7 @@ def run_judge_stage(args, log_dir):
     replacing one with the other, so the two can be compared directly."""
     existing_results = []
     if args.resume is not None:
-        run_number = args.resume
-        log_path = find_run_log(log_dir, run_number, args.log_gcs_uri)
+        run_number, log_path = resolve_resume(log_dir, args.resume, args.log_gcs_uri)
         run_start, existing_results = load_run_log(log_path)
         if run_start is None:
             raise SystemExit(f"--resume {run_number}: {log_path} has no run_start record to resume from")
@@ -626,6 +640,13 @@ def run_judge_stage(args, log_dir):
     )
     log_gcs_blob = _gcs_blob(args.log_gcs_uri, log_path.name) if args.log_gcs_uri else None
 
+    # Re-judge questions whose judged answer was a failed call that has
+    # since been retried in the source log.
+    retried = {(row["config"], row["question_id"]) for row in answered_rows
+               if not str(row.get("predicted", "")).startswith("[ERROR")}
+    existing_results = [row for row in existing_results
+                        if not (str(row.get("predicted", "")).startswith("[ERROR")
+                                and (row["config"], row["question_id"]) in retried)]
     already_done = {(row["config"], row["question_id"]) for row in existing_results}
     results = {}
     for row in existing_results:
@@ -713,8 +734,7 @@ def run_answer_stage(args, log_dir):
     since there's no dataset load or compressor to build here at all."""
     existing_results = []
     if args.resume is not None:
-        run_number = args.resume
-        log_path = find_run_log(log_dir, run_number, args.log_gcs_uri)
+        run_number, log_path = resolve_resume(log_dir, args.resume, args.log_gcs_uri)
         run_start, existing_results = load_run_log(log_path)
         if run_start is None:
             raise SystemExit(f"--resume {run_number}: {log_path} has no run_start record to resume from")
@@ -730,6 +750,9 @@ def run_answer_stage(args, log_dir):
 
     from_log_path = Path(args.from_log)
     from_run_start, compress_rows = load_run_log(from_log_path)
+    # Newest row per question: a resumed compress run re-compresses
+    # questions whose earlier attempt failed, appending the retry after it.
+    compress_rows = list({(row["config"], row["question_id"]): row for row in compress_rows}.values())
     if not compress_rows:
         raise SystemExit(f"{from_log_path} has no compress-stage result rows to answer")
     print(f"Loaded {len(compress_rows)} compressed questions from {from_log_path}")
@@ -998,9 +1021,10 @@ def main():
              "recovered even if it's interrupted partway through.",
     )
     parser.add_argument(
-        "--resume", type=int, default=None, metavar="RUN_NUMBER",
+        "--resume", default=None, metavar="RUN_NUMBER_OR_LOG",
         help="Continue an existing run instead of starting a new one, e.g. --resume 10 "
-             "continues eval_longmemeval_run0010.jsonl. Safe to Ctrl+C a long run and pick "
+             "continues eval_longmemeval_run0010.jsonl. Pass the log's path instead of a number "
+             "when two logs share that run number. Safe to Ctrl+C a long run and pick "
              "it back up later: this re-derives --limit/--seed/--question-types/--compressor/ "
              "etc. from that run's own run_start record (so it reproduces the exact same "
              "question sample regardless of what's passed this time), skips any "
@@ -1085,7 +1109,7 @@ def main():
         # started in, regardless of what --stage defaults to or whether
         # --project happens to be set this time -- peek at its own
         # run_start before deciding how to dispatch below.
-        peek_start, _ = load_run_log(find_run_log(log_dir, args.resume, args.log_gcs_uri))
+        peek_start, _ = load_run_log(resolve_resume(log_dir, args.resume, args.log_gcs_uri)[1])
         if peek_start and peek_start.get("stage"):
             args.stage = peek_start["stage"]
     elif args.stage == "full" and not args.project:
@@ -1115,8 +1139,7 @@ def main():
 
     existing_results = []
     if args.resume is not None:
-        run_number = args.resume
-        log_path = find_run_log(log_dir, run_number, args.log_gcs_uri)
+        run_number, log_path = resolve_resume(log_dir, args.resume, args.log_gcs_uri)
         run_start, existing_results = load_run_log(log_path)
         if run_start is None:
             raise SystemExit(f"--resume {run_number}: {log_path} has no run_start record to resume from")
@@ -1179,6 +1202,11 @@ def main():
 
     log_gcs_blob = _gcs_blob(args.log_gcs_uri, log_path.name) if args.log_gcs_uri else None
 
+    # Failed Gemini calls and failed compressions (e.g. CUDA out of memory)
+    # are retried on --resume; the retry's row supersedes them.
+    existing_results = [row for row in existing_results
+                        if not str(row.get("predicted", "")).startswith("[ERROR")
+                        and not str(row.get("question", "")).startswith("[ERROR")]
     already_done = {(row["config"], row["question_id"]) for row in existing_results}
     results = {name: [] for name, _ in configs}
     for row in existing_results:
