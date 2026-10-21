@@ -42,6 +42,8 @@ from huggingface_hub import hf_hub_download
 from core.agent import Agent
 from core.cpcCompressor import BASE_MODELS as CPC_BASE_MODELS
 from core.cpcCompressor import CPCCompressor, cpc_cache_key
+from core.dycp import DEFAULT_RETRIEVER as DYCP_DEFAULT_RETRIEVER
+from core.dycp import DyCPCompressor
 from core.geminiCompressor import GeminiCompressor
 from core.memory import Memory
 from core.runner import Runner
@@ -208,9 +210,12 @@ def build_agent(project=PROJECT_ID, location=LOCATION):
 
 def build_tokenwise(compressor: str, cpc_max_seq_length: int = 6144, cpc_preset: str = "llama",
                      project=PROJECT_ID, location=LOCATION, selection=None, score_cache=None,
-                     cpc_attention="bidirectional"):
+                     cpc_attention="bidirectional", dycp=None):
     if compressor == "none":
         return None
+
+    if compressor == "dycp":
+        return TokenWise(model=DyCPCompressor(**(dycp or {})), selection=selection)
 
     if compressor == "gemini":
         return TokenWise(model=GeminiCompressor(project=project, location=location, model=MODEL), selection=selection)
@@ -388,7 +393,8 @@ def run_tag(stage, settings):
         parts.append("fullhistory")
     elif compressor:
         parts.append(compressor)
-    if compressor not in (None, "none") and settings.get("token_budget"):
+    # DyCP decides how much to keep itself, so it has no token budget.
+    if compressor not in (None, "none", "dycp") and settings.get("token_budget"):
         parts.append(f"b{settings['token_budget']}")
 
     selection = settings.get("selection") or {}
@@ -515,7 +521,7 @@ def _resolve_source_settings(from_log_path, from_run_start):
     settings = dict(from_run_start["source_settings"]) if from_run_start.get("source_settings") else {
         key: from_run_start.get(key)
         for key in ("compressor", "cpc_preset", "cpc_max_seq_length", "cpc_attention", "token_budget",
-                    "min_unit_words", "selection", "decompositions")
+                    "min_unit_words", "selection", "decompositions", "dycp")
     }
     settings["resolved_from"] = str(from_log_path)
     return settings
@@ -858,6 +864,12 @@ def selection_from_args(args):
     )
 
 
+def dycp_settings(args):
+    if args.compressor != "dycp":
+        return None
+    return {"retriever": args.dycp_retriever, "tau": args.dycp_tau, "theta": args.dycp_theta}
+
+
 def load_decompositions(path):
     if not path:
         return None
@@ -977,12 +989,14 @@ def main():
     parser.add_argument("--recent-turns", type=int, default=4)
     parser.add_argument(
         "--compressor",
-        choices=["lexical", "gemini", "cpc", "none"],
+        choices=["lexical", "gemini", "cpc", "dycp", "none"],
         default="lexical",
         help="'lexical' ranks sentences by query word-overlap (default, no extra "
              "model load). 'cpc' uses the local context-aware embedding model "
              "(replicate/cpc_compressor.py) -- slow to load, needs torch/transformers/peft. "
              "'gemini' calls a hosted Gemini model to do the compression itself. "
+             "'dycp' reproduces DyCP (arXiv 2601.07994): whole turns scored with a "
+             "bi-encoder, contiguous spans picked by KadaneDial, no token budget. "
              "'none' disables compression entirely (tokenwise=None, full raw haystack sent "
              "as context every call) -- the uncompressed baseline, logged as "
              "'baseline_full_history' just like --compare-baseline's second config.",
@@ -1009,6 +1023,12 @@ def main():
         help="CPC encoder attention. 'bidirectional' is what the CPC LoRA was trained with; "
              "'causal' reproduces runs made before it was enforced (for the before/after comparison).",
     )
+    parser.add_argument("--dycp-retriever", default=DYCP_DEFAULT_RETRIEVER,
+                        help="Bi-encoder for --compressor dycp (the paper's main results use contriever-msmarco).")
+    parser.add_argument("--dycp-tau", type=float, default=0.6,
+                        help="DyCP gain threshold: a turn adds gain z - tau to its span.")
+    parser.add_argument("--dycp-theta", type=float, default=1.0,
+                        help="DyCP stopping threshold: stop once the best remaining span gains less.")
     parser.add_argument(
         "--compare-baseline", action="store_true",
         help="Also answer each question with no compression (the full raw haystack sent as "
@@ -1163,6 +1183,10 @@ def main():
         for key in ("min_unit_words", "decompositions", "score_cache", "cpc_attention"):
             if key in run_start:
                 setattr(args, key, run_start[key])
+        if run_start.get("dycp"):
+            args.dycp_retriever = run_start["dycp"]["retriever"]
+            args.dycp_tau = run_start["dycp"]["tau"]
+            args.dycp_theta = run_start["dycp"]["theta"]
         args.compare_baseline = len(run_start.get("configs", [])) > 1
         print(f"Resuming run {run_number} ({log_path}): "
               f"{len(existing_results)} (config, question) results already logged")
@@ -1193,9 +1217,9 @@ def main():
     tokenwise = build_tokenwise(
         args.compressor, cpc_max_seq_length=args.cpc_max_seq_length, cpc_preset=args.cpc_preset,
         project=args.project, location=args.location, selection=selection_config, score_cache=args.score_cache,
-        cpc_attention=args.cpc_attention,
+        cpc_attention=args.cpc_attention, dycp=dycp_settings(args),
     )
-    primary_name = "baseline_full_history" if args.compressor == "none" else f"compressed_{args.compressor}"
+    primary_name ="baseline_full_history" if args.compressor == "none" else f"compressed_{args.compressor}"
     configs = [(primary_name, tokenwise)]
     if args.compare_baseline and primary_name != "baseline_full_history":
         configs.append(("baseline_full_history", None))
@@ -1246,6 +1270,7 @@ def main():
             "min_unit_words": args.min_unit_words,
             "selection": asdict(selection_config),
             "decompositions": args.decompositions,
+            "dycp": dycp_settings(args),
             "score_cache": args.score_cache,
             "configs": [name for name, _ in configs],
         })

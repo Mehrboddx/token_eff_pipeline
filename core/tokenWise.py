@@ -60,6 +60,14 @@ class TokenWise:
         if not units:
             return CompressionResult(text="", selected=[], tokens=0)
 
+        if self.model is not None and hasattr(self.model, "select_units"):
+            # Selectors such as DyCP decide what (and how much) to keep
+            # themselves: no scoring, fusion or token budget here.
+            selected_ids = self.model.select_units(units, query)
+            selected = [units[index] for index in selected_ids]
+            text = render_units(selected)
+            return CompressionResult(text=text, selected=selected, tokens=self.count_tokens(text))
+
         if self.model is not None and not hasattr(self.model, "score_units"):
             text = self.model.compress(query=query, token_budget=token_budget, context=render_units(units))
             return CompressionResult(text=text, selected=None, tokens=self.count_tokens(text))
