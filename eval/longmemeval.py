@@ -44,6 +44,8 @@ from core.cpcCompressor import BASE_MODELS as CPC_BASE_MODELS
 from core.cpcCompressor import CPCCompressor, cpc_cache_key
 from core.dycp import DEFAULT_RETRIEVER as DYCP_DEFAULT_RETRIEVER
 from core.dycp import DyCPCompressor
+from core.provence import DEFAULT_MODEL as PROVENCE_DEFAULT_MODEL
+from core.provence import ProvenceCompressor, ProvenceSelector
 from core.geminiCompressor import GeminiCompressor
 from core.memory import Memory
 from core.runner import Runner
@@ -210,12 +212,17 @@ def build_agent(project=PROJECT_ID, location=LOCATION):
 
 def build_tokenwise(compressor: str, cpc_max_seq_length: int = 6144, cpc_preset: str = "llama",
                      project=PROJECT_ID, location=LOCATION, selection=None, score_cache=None,
-                     cpc_attention="bidirectional", dycp=None):
+                     cpc_attention="bidirectional", dycp=None, provence=None):
     if compressor == "none":
         return None
 
     if compressor == "dycp":
         return TokenWise(model=DyCPCompressor(**(dycp or {})), selection=selection)
+
+    if compressor == "provence":
+        provence = provence or {}
+        model_class = ProvenceCompressor if provence.get("threshold") is None else ProvenceSelector
+        return TokenWise(model=model_class(**provence), selection=selection)
 
     if compressor == "gemini":
         return TokenWise(model=GeminiCompressor(project=project, location=location, model=MODEL), selection=selection)
@@ -391,10 +398,15 @@ def run_tag(stage, settings):
             parts.append("causal")
     elif compressor == "none":
         parts.append("fullhistory")
+    elif compressor == "provence" and (settings.get("provence") or {}).get("threshold") is not None:
+        parts.append(f"provence-t{settings['provence']['threshold']:g}")
     elif compressor:
         parts.append(compressor)
-    # DyCP decides how much to keep itself, so it has no token budget.
-    if compressor not in (None, "none", "dycp") and settings.get("token_budget"):
+    # DyCP and native-threshold Provence decide how much to keep themselves,
+    # so they have no token budget.
+    self_sized = compressor == "dycp" or (
+        compressor == "provence" and (settings.get("provence") or {}).get("threshold") is not None)
+    if compressor not in (None, "none") and not self_sized and settings.get("token_budget"):
         parts.append(f"b{settings['token_budget']}")
 
     selection = settings.get("selection") or {}
@@ -521,7 +533,7 @@ def _resolve_source_settings(from_log_path, from_run_start):
     settings = dict(from_run_start["source_settings"]) if from_run_start.get("source_settings") else {
         key: from_run_start.get(key)
         for key in ("compressor", "cpc_preset", "cpc_max_seq_length", "cpc_attention", "token_budget",
-                    "min_unit_words", "selection", "decompositions", "dycp")
+                    "min_unit_words", "selection", "decompositions", "dycp", "provence")
     }
     settings["resolved_from"] = str(from_log_path)
     return settings
@@ -870,6 +882,12 @@ def dycp_settings(args):
     return {"retriever": args.dycp_retriever, "tau": args.dycp_tau, "theta": args.dycp_theta}
 
 
+def provence_settings(args):
+    if args.compressor != "provence":
+        return None
+    return {"model": args.provence_model, "threshold": args.provence_threshold}
+
+
 def load_decompositions(path):
     if not path:
         return None
@@ -989,7 +1007,7 @@ def main():
     parser.add_argument("--recent-turns", type=int, default=4)
     parser.add_argument(
         "--compressor",
-        choices=["lexical", "gemini", "cpc", "dycp", "none"],
+        choices=["lexical", "gemini", "cpc", "dycp", "provence", "none"],
         default="lexical",
         help="'lexical' ranks sentences by query word-overlap (default, no extra "
              "model load). 'cpc' uses the local context-aware embedding model "
@@ -997,6 +1015,8 @@ def main():
              "'gemini' calls a hosted Gemini model to do the compression itself. "
              "'dycp' reproduces DyCP (arXiv 2601.07994): whole turns scored with a "
              "bi-encoder, contiguous spans picked by KadaneDial, no token budget. "
+             "'provence' scores sentences with Provence (ICLR 2025)'s token keep/drop head "
+             "and fills the token budget, or applies its own threshold with --provence-threshold. "
              "'none' disables compression entirely (tokenwise=None, full raw haystack sent "
              "as context every call) -- the uncompressed baseline, logged as "
              "'baseline_full_history' just like --compare-baseline's second config.",
@@ -1029,6 +1049,11 @@ def main():
                         help="DyCP gain threshold: a turn adds gain z - tau to its span.")
     parser.add_argument("--dycp-theta", type=float, default=1.0,
                         help="DyCP stopping threshold: stop once the best remaining span gains less.")
+    parser.add_argument("--provence-model", default=PROVENCE_DEFAULT_MODEL,
+                        help="Provence checkpoint for --compressor provence.")
+    parser.add_argument("--provence-threshold", type=float, default=None,
+                        help="Use Provence's own keep decision at this threshold (the paper recommends "
+                             "0.1, or 0.5 for more compression) instead of filling --token-budget.")
     parser.add_argument(
         "--compare-baseline", action="store_true",
         help="Also answer each question with no compression (the full raw haystack sent as "
@@ -1187,6 +1212,9 @@ def main():
             args.dycp_retriever = run_start["dycp"]["retriever"]
             args.dycp_tau = run_start["dycp"]["tau"]
             args.dycp_theta = run_start["dycp"]["theta"]
+        if run_start.get("provence"):
+            args.provence_model = run_start["provence"]["model"]
+            args.provence_threshold = run_start["provence"]["threshold"]
         args.compare_baseline = len(run_start.get("configs", [])) > 1
         print(f"Resuming run {run_number} ({log_path}): "
               f"{len(existing_results)} (config, question) results already logged")
@@ -1199,6 +1227,7 @@ def main():
             "token_budget": args.token_budget,
             "selection": asdict(selection_from_args(args)),
             "decompositions": args.decompositions,
+            "provence": provence_settings(args),
         })
         print(f"Logging full per-question results to {log_path}")
 
@@ -1218,6 +1247,7 @@ def main():
         args.compressor, cpc_max_seq_length=args.cpc_max_seq_length, cpc_preset=args.cpc_preset,
         project=args.project, location=args.location, selection=selection_config, score_cache=args.score_cache,
         cpc_attention=args.cpc_attention, dycp=dycp_settings(args),
+        provence=provence_settings(args),
     )
     primary_name ="baseline_full_history" if args.compressor == "none" else f"compressed_{args.compressor}"
     configs = [(primary_name, tokenwise)]
@@ -1271,6 +1301,7 @@ def main():
             "selection": asdict(selection_config),
             "decompositions": args.decompositions,
             "dycp": dycp_settings(args),
+            "provence": provence_settings(args),
             "score_cache": args.score_cache,
             "configs": [name for name, _ in configs],
         })
