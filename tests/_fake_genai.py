@@ -20,10 +20,19 @@ class Part:
         return Part(text)
 
 
+class _Namespace(pytypes.SimpleNamespace):
+    """Any other name (genai.Client, types.GenerateContentConfig, ...) is
+    only referenced in type hints by the modules under test."""
+
+    def __getattr__(self, name):
+        return type(name, (), {})
+
+
 def install():
     fake_google = pytypes.ModuleType("google")
     fake_genai = pytypes.ModuleType("google.genai")
-    fake_genai.types = pytypes.SimpleNamespace(Content=Content, Part=Part)
+    fake_genai.types = _Namespace(Content=Content, Part=Part)
+    fake_genai.__getattr__ = lambda name: type(name, (), {})
     fake_google.genai = fake_genai
     sys.modules.setdefault("google", fake_google)
     sys.modules.setdefault("google.genai", fake_genai)

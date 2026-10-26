@@ -52,6 +52,8 @@ from core.runner import Runner
 from core.selection import SelectionConfig
 from core.tokenWise import TokenWise
 from eval.evidence import exact_evidence_recall, summarize_recall, text_matched_evidence_recall
+from eval.locomo import CATEGORIES as LOCOMO_CATEGORIES
+from eval.locomo import LOCOMO_COMMIT, load_locomo
 from eval.score_cache import CachedScorer
 from prompts.prompt import universal_agent_prompt
 
@@ -76,6 +78,26 @@ def load_longmemeval(limit=None, seed=42, question_types=None):
         items = random.Random(seed).sample(items, limit)
 
     return items
+
+
+ALL_TYPES = {"locomo": list(LOCOMO_CATEGORIES.values())}  # None: no filter
+
+
+def load_items(dataset="longmemeval_s", limit=None, seed=42, question_types=None):
+    if dataset == "locomo":
+        return load_locomo(limit=limit, seed=seed, question_types=question_types)
+    return load_longmemeval(limit=limit, seed=seed, question_types=question_types)
+
+
+def dataset_label(dataset):
+    """What run_start records as "dataset" (and resume maps back)."""
+    if dataset == "locomo":
+        return f"snap-research/locomo@{LOCOMO_COMMIT[:8]}:locomo10"
+    return f"{DATASET_REPO}:{DATASET_FILE}"
+
+
+def dataset_from_label(label):
+    return "locomo" if str(label or "").startswith("snap-research/locomo") else "longmemeval_s"
 
 
 def _parse_haystack_date(date_str):
@@ -107,12 +129,17 @@ def seed_memory_from_haystack(item):
     query: 36-55% of the CPC compression budget on temporal-reasoning and
     knowledge-update questions went to bare tags.
 
+    Items that already carry `session_time_labels` (LoCoMo: absolute
+    session dates, no question date) use those as-is, and turns that carry
+    a `speaker` are labelled with it instead of User/Assistant.
+
     `session` is the session's position, never its id: LongMemEval ids
     for answer-bearing sessions start with "answer_", which would leak
     the label if anything ever rendered it."""
     memory = Memory()
     dates = item.get("haystack_dates") or []
     session_ids = item.get("haystack_session_ids") or []
+    fixed_labels = item.get("session_time_labels")
     question_date = item.get("question_date")
     question_dt = None
     if question_date:
@@ -123,7 +150,9 @@ def seed_memory_from_haystack(item):
 
     for session_index, session in enumerate(item["haystack_sessions"]):
         time_label = None
-        if question_dt is not None and session_index < len(dates):
+        if fixed_labels is not None:
+            time_label = fixed_labels[session_index] if session_index < len(fixed_labels) else None
+        elif question_dt is not None and session_index < len(dates):
             try:
                 # Calendar days, not elapsed 24h periods: flooring a
                 # timedelta drops a day whenever the session's clock time
@@ -133,7 +162,12 @@ def seed_memory_from_haystack(item):
                 time_label = f"{days_before} days before this question"
             except ValueError:
                 time_label = None
-        prefix = f"(from {time_label}) " if time_label else ""
+        if not time_label:
+            session_prefix = ""
+        elif fixed_labels is not None:
+            session_prefix = f"({time_label}) "
+        else:
+            session_prefix = f"(from {time_label}) "
 
         for turn in session:
             content = (turn.get("content") or "").strip()
@@ -146,6 +180,10 @@ def seed_memory_from_haystack(item):
                 "has_answer": bool(turn.get("has_answer")),
                 "session_id": session_ids[session_index] if session_index < len(session_ids) else None,
             }
+            prefix = session_prefix
+            if turn.get("speaker"):
+                meta["speaker"] = turn["speaker"]
+                prefix += f"{turn['speaker']}: "
             if turn.get("role") == "user":
                 memory.add_user_message(content, meta=meta, prefix=prefix)
             elif turn.get("role") == "assistant":
@@ -391,6 +429,8 @@ def run_tag(stage, settings):
     Only a convenience for browsing: the authoritative settings are the
     run_start record inside the file (what --resume reads)."""
     parts = [stage]
+    if settings.get("dataset") == "locomo":
+        parts.append("locomo")
     compressor = settings.get("compressor")
     if compressor == "cpc":
         parts.append(f"cpc-{settings.get('cpc_preset')}")
@@ -917,7 +957,8 @@ def run_recall_stage(args):
     from_log_path = Path(args.from_log)
     run_start, rows = load_run_log(from_log_path)
     recent_turns = (run_start or {}).get("recent_turns") or args.recent_turns
-    items = {item["question_id"]: item for item in load_longmemeval()}
+    dataset = dataset_from_label((run_start or {}).get("dataset"))
+    items = {item["question_id"]: item for item in load_items(dataset, question_types=ALL_TYPES.get(dataset))}
     print(f"Text-matched evidence recall for {from_log_path} ({len(rows)} rows, recent_turns={recent_turns})")
 
     by_config = {}
@@ -964,7 +1005,7 @@ def run_decompose_stage(args):
     path = Path(args.decompositions)
     decompositions = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     question_types = args.question_types.split(",") if args.question_types else None
-    items = load_longmemeval(limit=args.limit, seed=args.seed, question_types=question_types)
+    items = load_items(args.dataset, limit=args.limit, seed=args.seed, question_types=question_types)
     client = genai.Client(
         vertexai=True, project=args.project, location=args.location,
         http_options=types.HttpOptions(timeout=120_000),
@@ -998,6 +1039,12 @@ def main():
     parser.add_argument("--limit", type=int, default=25, help="Number of questions to sample.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--question-types", default=None, help="Comma-separated question_type filter.")
+    parser.add_argument(
+        "--dataset", choices=["longmemeval_s", "locomo"], default="longmemeval_s",
+        help="'locomo' is LoCoMo (ACL 2024): 10 long two-person conversations, 1,540 QA pairs in "
+             "categories multi-hop/temporal/open-domain/single-hop (adversarial excluded unless "
+             "named in --question-types). Pass --limit 1540 for all of them.",
+    )
     parser.add_argument(
         "--token-budget", type=int, default=500,
         help="compression_token_budget. Haystacks run tens of thousands of words, so "
@@ -1199,6 +1246,7 @@ def main():
         args.token_budget = run_start.get("token_budget", args.token_budget)
         args.sentence_threshold = run_start.get("sentence_threshold", args.sentence_threshold)
         args.recent_turns = run_start.get("recent_turns", args.recent_turns)
+        args.dataset = dataset_from_label(run_start.get("dataset"))
         if run_start.get("cpc_max_seq_length") is not None:
             args.cpc_max_seq_length = run_start["cpc_max_seq_length"]
         if run_start.get("cpc_preset") is not None:
@@ -1221,6 +1269,7 @@ def main():
     else:
         run_number = _next_run_number(log_dir, gcs_uri=args.log_gcs_uri)
         log_path = new_log_path(log_dir, run_number, args.stage, {
+            "dataset": args.dataset,
             "compressor": args.compressor,
             "cpc_preset": args.cpc_preset,
             "cpc_attention": args.cpc_attention,
@@ -1232,8 +1281,8 @@ def main():
         print(f"Logging full per-question results to {log_path}")
 
     question_types = args.question_types.split(",") if args.question_types else None
-    items = load_longmemeval(limit=args.limit, seed=args.seed, question_types=question_types)
-    print(f"Loaded {len(items)} questions from {DATASET_REPO}:{DATASET_FILE}")
+    items = load_items(args.dataset, limit=args.limit, seed=args.seed, question_types=question_types)
+    print(f"Loaded {len(items)} questions from {dataset_label(args.dataset)}")
 
     # --stage compress never calls the model, so it never needs Vertex AI
     # credentials -- skip building the Agent entirely rather than fail on a
@@ -1285,7 +1334,7 @@ def main():
             # doesn't silently make older logs ambiguous about which model
             # produced them.
             "model": MODEL,
-            "dataset": f"{DATASET_REPO}:{DATASET_FILE}",
+            "dataset": dataset_label(args.dataset),
             "limit": args.limit,
             "seed": args.seed,
             "question_types": question_types,

@@ -96,7 +96,10 @@ def session_header(unit: Unit) -> str:
 
 
 def role_label(unit: Unit) -> str:
-    return f"{ROLE_LABELS.get(unit.role, unit.role)}:"
+    """The speaker's name when the history has named speakers (LoCoMo:
+    two people, both named in the questions), otherwise the role."""
+    speaker = (unit.meta or {}).get("speaker")
+    return f"{speaker or ROLE_LABELS.get(unit.role, unit.role)}:"
 
 
 def has_sessions(units: List[Unit]) -> bool:
