@@ -51,6 +51,7 @@ from core.memory import Memory
 from core.runner import Runner
 from core.selection import SelectionConfig
 from core.tokenWise import TokenWise
+from core.units import ROLE_LABELS
 from eval.evidence import exact_evidence_recall, summarize_recall, text_matched_evidence_recall
 from eval.locomo import CATEGORIES as LOCOMO_CATEGORIES
 from eval.locomo import LOCOMO_COMMIT, load_locomo
@@ -284,6 +285,7 @@ class CompressionSettings:
     token_budget: int = 500
     recent_turns: int = 4
     min_unit_words: int = 4
+    paper: bool = False  # --paper-cpc: CPC on the whole history as one plain document
 
 
 def make_runner(agent, memory, tokenwise, settings):
@@ -315,6 +317,49 @@ def retrieval_queries(item, decompositions=None):
     would pull every date-bearing sentence up the ranking), plus any
     sub-queries from --decompositions for multi-query scoring."""
     return [item["question"], *((decompositions or {}).get(item["question_id"]) or [])]
+
+
+def paper_transcript(memory):
+    """The whole history as one plain document, the way the CPC paper takes
+    its input: a "[Session: ...]" line where a session starts, then one
+    "Speaker: text" line per turn. Dates and labels are part of the text,
+    so they are split and scored like any other sentence."""
+    lines = []
+    current_session = object()
+    current_entry = None
+    for entry in memory.get_sentence_entries():
+        meta = entry["meta"] or {}
+        if entry["entry_index"] == current_entry:
+            lines[-1] += " " + entry["text"]
+            continue
+        current_entry = entry["entry_index"]
+        if meta.get("session") != current_session:
+            current_session = meta.get("session")
+            if meta.get("time"):
+                lines.append(f"[Session: {meta['time']}]")
+        label = meta.get("speaker") or ROLE_LABELS.get(entry["role"], entry["role"])
+        lines.append(f"{label}: {entry['text']}")
+    return "\n".join(lines)
+
+
+def compress_paper(item, tokenwise, settings, memory, question):
+    """--paper-cpc: no recent turns, no units, no rendering -- the paper's
+    CPC on the transcript, scored against the plain question. Only the
+    budget measure (cl100k) and the answer prompt match the other runs."""
+    text = tokenwise.model.compress_document(
+        paper_transcript(memory), item["question"], settings.token_budget, count_tokens=tokenwise.count_tokens,
+    )
+    history = [
+        types.Content(role="user", parts=[types.Part.from_text(text=f"Relevant earlier context:\n{text}")]),
+        types.Content(role="user", parts=[types.Part.from_text(text=question)]),
+    ]
+    info = {
+        "compressed_tokens": tokenwise.count_tokens(text),
+        "candidate_units": None,
+        # recent_turns=1: only the question itself is outside the compressed text.
+        "evidence": text_matched_evidence_recall(item, text, "compressed_history", 1),
+    }
+    return Agent.describe_history(history), "compressed_history", info
 
 
 def compression_info(runner, memory, item, mode):
@@ -350,9 +395,12 @@ def compress_question(item, tokenwise, settings, decompositions=None, seeded_mem
     (possibly date-tagged) text the answering model gets, and info holds
     compressed-token counts and evidence recall."""
     memory = seeded_memory.copy() if seeded_memory is not None else seed_memory_from_haystack(item)
-    runner = make_runner(None, memory, tokenwise, settings)
     question = _question_with_date_tag(item)
+    if settings.paper:
+        described, mode, info = compress_paper(item, tokenwise, settings, memory, question)
+        return described, mode, question, info
 
+    runner = make_runner(None, memory, tokenwise, settings)
     previous_sentences = memory.get_sentences()
     memory.add_user_message(question)
     history, mode = runner._build_history(question, previous_sentences, retrieval_queries(item, decompositions))
@@ -377,6 +425,10 @@ def answer_from_compressed(agent, described_history):
 
 
 def answer_question(agent, item, tokenwise, settings, decompositions=None):
+    if settings.paper:
+        described, mode, _, info = compress_question(item, tokenwise, settings)
+        return answer_from_compressed(agent, described), mode, _compressed_context_from_described(described, mode), info
+
     memory = seed_memory_from_haystack(item)
     runner = make_runner(agent, memory, tokenwise, settings)
     question = _question_with_date_tag(item)
@@ -464,6 +516,8 @@ def run_tag(stage, settings):
         parts.append(f"hyb{selection['lexical_weight']:g}")
     if settings.get("decompositions"):
         parts.append("mq")
+    if settings.get("paper_cpc"):
+        parts.append("paper")
     return re.sub(r"[^A-Za-z0-9._-]", "-", "_".join(parts))
 
 
@@ -573,7 +627,7 @@ def _resolve_source_settings(from_log_path, from_run_start):
     settings = dict(from_run_start["source_settings"]) if from_run_start.get("source_settings") else {
         key: from_run_start.get(key)
         for key in ("compressor", "cpc_preset", "cpc_max_seq_length", "cpc_attention", "token_budget",
-                    "min_unit_words", "selection", "decompositions", "dycp", "provence")
+                    "min_unit_words", "selection", "decompositions", "dycp", "provence", "paper_cpc")
     }
     settings["resolved_from"] = str(from_log_path)
     return settings
@@ -990,6 +1044,18 @@ DECOMPOSE_PROMPT = (
     "Return only a JSON array of strings.\n\nQuestion: {question}"
 )
 
+# LoCoMo is two people talking to each other, and its questions name them,
+# so each query must keep the person it is about.
+LOCOMO_DECOMPOSE_PROMPT = (
+    "A retrieval system searches a long chat history between two people, recorded over many "
+    "sessions, to answer the question below. Rewrite the question as 1 to 3 short, standalone "
+    "search queries, one per distinct fact that must be found in the conversations (for "
+    "example: each event whose date is needed, each item being counted or compared, each "
+    "fact that a multi-step answer depends on). Keep the person's name in every query. If one "
+    "fact suffices, return a single query. Do not answer the question.\n"
+    "Return only a JSON array of strings.\n\nQuestion: {question}"
+)
+
 
 def run_decompose_stage(args):
     """--stage decompose: one Gemini call per sampled question, producing
@@ -1011,11 +1077,12 @@ def run_decompose_stage(args):
         http_options=types.HttpOptions(timeout=120_000),
     )
     config = types.GenerateContentConfig(temperature=0, response_mime_type="application/json")
+    template = LOCOMO_DECOMPOSE_PROMPT if args.dataset == "locomo" else DECOMPOSE_PROMPT
 
     for index, item in enumerate(items, start=1):
         if item["question_id"] in decompositions:
             continue
-        prompt = DECOMPOSE_PROMPT.format(question=item["question"])
+        prompt = template.format(question=item["question"])
         try:
             response = client.models.generate_content(
                 model=MODEL,
@@ -1052,6 +1119,13 @@ def main():
     )
     parser.add_argument("--sentence-threshold", type=int, default=20)
     parser.add_argument("--recent-turns", type=int, default=4)
+    parser.add_argument(
+        "--paper-cpc", action="store_true",
+        help="Baseline for the ablation: CPC as the paper runs it (--compressor cpc only). The whole "
+             "history becomes one plain transcript with dates and speaker labels in the text; no "
+             "recent turns, sentence threshold, units, session chunks or rendering. Budget still "
+             "in cl100k tokens and the answer prompt unchanged, so it compares with the other runs.",
+    )
     parser.add_argument(
         "--compressor",
         choices=["lexical", "gemini", "cpc", "dycp", "provence", "none"],
@@ -1192,6 +1266,12 @@ def main():
                            help="CPC only: cache scores on disk keyed by the exact candidate units, "
                                 "so re-runs with different selection settings skip the GPU entirely.")
     args = parser.parse_args()
+    if args.paper_cpc and args.stage in ("full", "compress") and args.resume is None:
+        if args.compressor != "cpc":
+            parser.error("--paper-cpc needs --compressor cpc")
+        if args.decompositions or args.score_cache or selection_from_args(args) != SelectionConfig():
+            parser.error("--paper-cpc is the paper's plain CPC: no selection variants, "
+                         "--decompositions or --score-cache")
 
     log_dir = Path(args.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -1253,7 +1333,7 @@ def main():
             args.cpc_preset = run_start["cpc_preset"]
         for key, value in (run_start.get("selection") or {}).items():
             setattr(args, key, value)
-        for key in ("min_unit_words", "decompositions", "score_cache", "cpc_attention"):
+        for key in ("min_unit_words", "decompositions", "score_cache", "cpc_attention", "paper_cpc"):
             if key in run_start:
                 setattr(args, key, run_start[key])
         if run_start.get("dycp"):
@@ -1277,6 +1357,7 @@ def main():
             "selection": asdict(selection_from_args(args)),
             "decompositions": args.decompositions,
             "provence": provence_settings(args),
+            "paper_cpc": args.paper_cpc,
         })
         print(f"Logging full per-question results to {log_path}")
 
@@ -1290,7 +1371,8 @@ def main():
     agent = build_agent(project=args.project, location=args.location) if args.stage != "compress" else None
 
     selection_config = selection_from_args(args)
-    settings = CompressionSettings(args.sentence_threshold, args.token_budget, args.recent_turns, args.min_unit_words)
+    settings = CompressionSettings(args.sentence_threshold, args.token_budget, args.recent_turns, args.min_unit_words,
+                                   paper=args.paper_cpc)
     decompositions = load_decompositions(args.decompositions)
     tokenwise = build_tokenwise(
         args.compressor, cpc_max_seq_length=args.cpc_max_seq_length, cpc_preset=args.cpc_preset,
@@ -1349,6 +1431,7 @@ def main():
             "min_unit_words": args.min_unit_words,
             "selection": asdict(selection_config),
             "decompositions": args.decompositions,
+            "paper_cpc": args.paper_cpc,
             "dycp": dycp_settings(args),
             "provence": provence_settings(args),
             "score_cache": args.score_cache,

@@ -497,7 +497,11 @@ class CPCCompressor:
         context: str,
         question: str,
         compression_target_tokens: int,
+        count_tokens=None,
     ) -> str:
+        """`count_tokens` measures the budget (default: the encoder's own
+        tokenizer), so callers can hold this to the same unit as others."""
+        count_tokens = count_tokens or self._count_tokens
         sentences = self._split_sentences(context)
         if not sentences:
             return context
@@ -556,7 +560,7 @@ class CPCCompressor:
                         text=sent_text,
                         start=start,
                         end=end,
-                        token_count=self._count_tokens(sent_text),
+                        token_count=count_tokens(sent_text),
                         score=score,
                     )
                 )

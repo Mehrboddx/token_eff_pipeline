@@ -67,6 +67,11 @@ class CPCCompressor:
             list(queries),
         )
 
+    def compress_document(self, context: str, question: str, token_budget: int, count_tokens=None) -> str:
+        """CPC exactly as the paper runs it: one plain document, split and
+        chunked as a whole, top sentences joined in their original order."""
+        return self._compressor.compress(context, question, token_budget, count_tokens=count_tokens)
+
     def unit_embeddings(self, units: Sequence[Unit], ids: Sequence[int]) -> Dict[int, np.ndarray]:
         """Context-aware sentence embeddings for the given unit ids, for
         meaning-based MMR. Chunks just scored are served from the
