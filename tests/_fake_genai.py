@@ -25,14 +25,22 @@ class _Namespace(pytypes.SimpleNamespace):
     only referenced in type hints by the modules under test."""
 
     def __getattr__(self, name):
-        return type(name, (), {})
+        return _stand_in(name)
+
+
+def _stand_in(name):
+    # Dunder lookups (__file__, __path__, ...) must fail as on a real module:
+    # libraries imported later, e.g. torch, probe them on everything in sys.modules.
+    if name.startswith("__"):
+        raise AttributeError(name)
+    return type(name, (), {})
 
 
 def install():
     fake_google = pytypes.ModuleType("google")
     fake_genai = pytypes.ModuleType("google.genai")
     fake_genai.types = _Namespace(Content=Content, Part=Part)
-    fake_genai.__getattr__ = lambda name: type(name, (), {})
+    fake_genai.__getattr__ = _stand_in
     fake_google.genai = fake_genai
     sys.modules.setdefault("google", fake_google)
     sys.modules.setdefault("google.genai", fake_genai)

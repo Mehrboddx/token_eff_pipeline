@@ -106,6 +106,12 @@ def has_sessions(units: List[Unit]) -> bool:
     return any(unit.session is not None for unit in units)
 
 
+def render_flat(units: List[Unit]) -> str:
+    """Selected units joined in their original order with nothing else,
+    as the CPC paper returns them (the layout ablation)."""
+    return " ".join(unit.text for unit in sorted(units, key=lambda unit: unit.id))
+
+
 def render_units(units: List[Unit]) -> str:
     """Selected units, chronologically, grouped under one header per
     session and one role label per turn. " … " marks sentences skipped

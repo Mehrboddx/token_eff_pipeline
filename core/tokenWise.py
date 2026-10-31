@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from core.scorers import BM25Scorer, LexicalScorer
 from core.selection import SelectionConfig, fuse_scores, mmr_pool_ids, select_units
-from core.units import Unit, render_units
+from core.units import Unit, render_flat, render_units
 
 
 @dataclass
@@ -85,5 +85,5 @@ class TokenWise:
             embeddings = scorer.unit_embeddings(units, mmr_pool_ids(units, scores, self.selection))
         selected_ids = select_units(units, scores, token_budget, self.count_tokens, self.selection, embeddings)
         selected = [units[index] for index in selected_ids]
-        text = render_units(selected)
+        text = (render_flat if self.selection.flat_output else render_units)(selected)
         return CompressionResult(text=text, selected=selected, tokens=self.count_tokens(text))

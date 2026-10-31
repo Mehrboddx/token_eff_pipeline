@@ -108,7 +108,7 @@ def _parse_haystack_date(date_str):
     return datetime.strptime(cleaned, "%Y/%m/%d %H:%M")
 
 
-def seed_memory_from_haystack(item):
+def seed_memory_from_haystack(item, date_in_text=False):
     """Replay one item's haystack sessions into a fresh Memory, in their
     original (chronological) order. These are pre-recorded turns, so they
     go straight into Memory via add_user_message/add_model_content rather
@@ -136,7 +136,10 @@ def seed_memory_from_haystack(item):
 
     `session` is the session's position, never its id: LongMemEval ids
     for answer-bearing sessions start with "answer_", which would leak
-    the label if anything ever rendered it."""
+    the label if anything ever rendered it.
+
+    `date_in_text` (--ablate date-in-text) puts the date tag back into the
+    text every turn is scored on, to measure what keeping it out is worth."""
     memory = Memory()
     dates = item.get("haystack_dates") or []
     session_ids = item.get("haystack_session_ids") or []
@@ -182,6 +185,8 @@ def seed_memory_from_haystack(item):
                 "session_id": session_ids[session_index] if session_index < len(session_ids) else None,
             }
             prefix = session_prefix
+            if date_in_text:
+                content, prefix = session_prefix + content, ""
             if turn.get("speaker"):
                 meta["speaker"] = turn["speaker"]
                 prefix += f"{turn['speaker']}: "
@@ -251,7 +256,7 @@ def build_agent(project=PROJECT_ID, location=LOCATION):
 
 def build_tokenwise(compressor: str, cpc_max_seq_length: int = 6144, cpc_preset: str = "llama",
                      project=PROJECT_ID, location=LOCATION, selection=None, score_cache=None,
-                     cpc_attention="bidirectional", dycp=None, provence=None):
+                     cpc_attention="bidirectional", dycp=None, provence=None, cpc_ablate=()):
     if compressor == "none":
         return None
 
@@ -267,11 +272,15 @@ def build_tokenwise(compressor: str, cpc_max_seq_length: int = 6144, cpc_preset:
         return TokenWise(model=GeminiCompressor(project=project, location=location, model=MODEL), selection=selection)
 
     if compressor == "cpc":
+        encoder = {"speaker_labels": "no-speaker-labels" not in cpc_ablate,
+                   "session_chunks": "cross-session-chunks" not in cpc_ablate}
+
         def factory():
-            return CPCCompressor(preset=cpc_preset, max_seq_length=cpc_max_seq_length, attention=cpc_attention)
+            return CPCCompressor(preset=cpc_preset, max_seq_length=cpc_max_seq_length, attention=cpc_attention,
+                                 **encoder)
 
         model = (
-            CachedScorer(factory, score_cache, cpc_cache_key(cpc_preset, cpc_max_seq_length, cpc_attention))
+            CachedScorer(factory, score_cache, cpc_cache_key(cpc_preset, cpc_max_seq_length, cpc_attention, **encoder))
             if score_cache else factory()
         )
         return TokenWise(model=model, selection=selection)
@@ -286,6 +295,21 @@ class CompressionSettings:
     recent_turns: int = 4
     min_unit_words: int = 4
     paper: bool = False  # --paper-cpc: CPC on the whole history as one plain document
+    paper_turn_dates: bool = False  # --paper-dates turn: the date on every turn line instead
+    ablate: tuple = ()  # --ablate: changes switched off, see ABLATIONS
+
+
+# --ablate values: each switches off one of our changes to the CPC paper's
+# method (numbered as on the slides), to measure what it is worth alone.
+# Two more need no switch: --recent-turns 1 (change 3, no recent turns kept
+# word for word) and --min-unit-words 0 (change 8, fragments not merged).
+ABLATIONS = {
+    "flat-output": "17: kept sentences joined as plain text, no session headers or speaker labels",
+    "date-in-text": "7: the date tag is part of every turn's scored text",
+    "dated-query": "14: score against the date-tagged question the answer model gets",
+    "no-speaker-labels": "10: no speaker label before each turn for the encoder",
+    "cross-session-chunks": "11: encoder chunks packed across session boundaries",
+}
 
 
 def make_runner(agent, memory, tokenwise, settings):
@@ -312,18 +336,22 @@ def _question_with_date_tag(item):
     return question
 
 
-def retrieval_queries(item, decompositions=None):
+def retrieval_queries(item, decompositions=None, dated=False):
     """What compressors score against: the bare question (a date prefix
     would pull every date-bearing sentence up the ranking), plus any
-    sub-queries from --decompositions for multi-query scoring."""
-    return [item["question"], *((decompositions or {}).get(item["question_id"]) or [])]
+    sub-queries from --decompositions for multi-query scoring. `dated`
+    (--ablate dated-query) scores the date-tagged question instead."""
+    question = _question_with_date_tag(item) if dated else item["question"]
+    return [question, *((decompositions or {}).get(item["question_id"]) or [])]
 
 
-def paper_transcript(memory):
+def paper_transcript(memory, turn_dates=False):
     """The whole history as one plain document, the way the CPC paper takes
     its input: a "[Session: ...]" line where a session starts, then one
     "Speaker: text" line per turn. Dates and labels are part of the text,
-    so they are split and scored like any other sentence."""
+    so they are split and scored like any other sentence. `turn_dates`
+    starts every turn line with "[date]" instead, so a kept sentence's
+    date can't be lost separately from it."""
     lines = []
     current_session = object()
     current_entry = None
@@ -335,10 +363,11 @@ def paper_transcript(memory):
         current_entry = entry["entry_index"]
         if meta.get("session") != current_session:
             current_session = meta.get("session")
-            if meta.get("time"):
+            if meta.get("time") and not turn_dates:
                 lines.append(f"[Session: {meta['time']}]")
         label = meta.get("speaker") or ROLE_LABELS.get(entry["role"], entry["role"])
-        lines.append(f"{label}: {entry['text']}")
+        date = f"[{meta['time']}] " if turn_dates and meta.get("time") else ""
+        lines.append(f"{date}{label}: {entry['text']}")
     return "\n".join(lines)
 
 
@@ -347,7 +376,7 @@ def compress_paper(item, tokenwise, settings, memory, question):
     CPC on the transcript, scored against the plain question. Only the
     budget measure (cl100k) and the answer prompt match the other runs."""
     text = tokenwise.model.compress_document(
-        paper_transcript(memory), item["question"], settings.token_budget, count_tokens=tokenwise.count_tokens,
+        paper_transcript(memory, settings.paper_turn_dates), item["question"], settings.token_budget, count_tokens=tokenwise.count_tokens,
     )
     history = [
         types.Content(role="user", parts=[types.Part.from_text(text=f"Relevant earlier context:\n{text}")]),
@@ -394,7 +423,8 @@ def compress_question(item, tokenwise, settings, decompositions=None, seeded_mem
     form, mode is "compressed_history"/"full_history", question is the
     (possibly date-tagged) text the answering model gets, and info holds
     compressed-token counts and evidence recall."""
-    memory = seeded_memory.copy() if seeded_memory is not None else seed_memory_from_haystack(item)
+    memory = (seeded_memory.copy() if seeded_memory is not None
+              else seed_memory_from_haystack(item, date_in_text="date-in-text" in settings.ablate))
     question = _question_with_date_tag(item)
     if settings.paper:
         described, mode, info = compress_paper(item, tokenwise, settings, memory, question)
@@ -403,7 +433,8 @@ def compress_question(item, tokenwise, settings, decompositions=None, seeded_mem
     runner = make_runner(None, memory, tokenwise, settings)
     previous_sentences = memory.get_sentences()
     memory.add_user_message(question)
-    history, mode = runner._build_history(question, previous_sentences, retrieval_queries(item, decompositions))
+    queries = retrieval_queries(item, decompositions, dated="dated-query" in settings.ablate)
+    history, mode = runner._build_history(question, previous_sentences, queries)
 
     return Agent.describe_history(history), mode, question, compression_info(runner, memory, item, mode)
 
@@ -429,7 +460,7 @@ def answer_question(agent, item, tokenwise, settings, decompositions=None):
         described, mode, _, info = compress_question(item, tokenwise, settings)
         return answer_from_compressed(agent, described), mode, _compressed_context_from_described(described, mode), info
 
-    memory = seed_memory_from_haystack(item)
+    memory = seed_memory_from_haystack(item, date_in_text="date-in-text" in settings.ablate)
     runner = make_runner(agent, memory, tokenwise, settings)
     question = _question_with_date_tag(item)
 
@@ -450,7 +481,8 @@ def answer_question(agent, item, tokenwise, settings, decompositions=None):
 
     agent.context_monitor = capture_context
     try:
-        response = runner.run(question, retrieval_queries=retrieval_queries(item, decompositions))
+        queries = retrieval_queries(item, decompositions, dated="dated-query" in settings.ablate)
+        response = runner.run(question, retrieval_queries=queries)
     finally:
         agent.context_monitor = None
 
@@ -517,7 +549,9 @@ def run_tag(stage, settings):
     if settings.get("decompositions"):
         parts.append("mq")
     if settings.get("paper_cpc"):
-        parts.append("paper")
+        parts.append("paper-turndates" if settings.get("paper_dates") == "turn" else "paper")
+    for ablation in settings.get("ablate") or ():
+        parts.append(f"abl-{ablation}")
     return re.sub(r"[^A-Za-z0-9._-]", "-", "_".join(parts))
 
 
@@ -627,7 +661,8 @@ def _resolve_source_settings(from_log_path, from_run_start):
     settings = dict(from_run_start["source_settings"]) if from_run_start.get("source_settings") else {
         key: from_run_start.get(key)
         for key in ("compressor", "cpc_preset", "cpc_max_seq_length", "cpc_attention", "token_budget",
-                    "min_unit_words", "selection", "decompositions", "dycp", "provence", "paper_cpc")
+                    "min_unit_words", "selection", "decompositions", "dycp", "provence", "paper_cpc",
+                    "paper_dates", "ablate", "recent_turns")
     }
     settings["resolved_from"] = str(from_log_path)
     return settings
@@ -967,6 +1002,7 @@ def selection_from_args(args):
         top_sessions=args.top_sessions,
         window=args.window,
         pair_turns=args.pair_turns,
+        flat_output="flat-output" in (getattr(args, "ablate", None) or ()),
     )
 
 
@@ -1127,6 +1163,16 @@ def main():
              "in cl100k tokens and the answer prompt unchanged, so it compares with the other runs.",
     )
     parser.add_argument(
+        "--paper-dates", choices=["session", "turn"], default="session",
+        help="--paper-cpc only: one '[Session: date]' line per session (default), or the date at "
+             "the start of every turn line, so a kept sentence can't lose its date.",
+    )
+    parser.add_argument(
+        "--ablate", action="append", choices=sorted(ABLATIONS), default=[],
+        help="Switch off one of our changes to the paper's CPC (repeatable): "
+             + "; ".join(f"{name} = change {what}" for name, what in ABLATIONS.items()) + ".",
+    )
+    parser.add_argument(
         "--compressor",
         choices=["lexical", "gemini", "cpc", "dycp", "provence", "none"],
         default="lexical",
@@ -1272,6 +1318,11 @@ def main():
         if args.decompositions or args.score_cache or selection_from_args(args) != SelectionConfig():
             parser.error("--paper-cpc is the paper's plain CPC: no selection variants, "
                          "--decompositions or --score-cache")
+    if args.paper_dates != "session" and not args.paper_cpc:
+        parser.error("--paper-dates only applies to --paper-cpc")
+    if args.ablate and (args.paper_cpc or args.compressor != "cpc"):
+        parser.error("--ablate switches off changes of our CPC pipeline: needs --compressor cpc, not --paper-cpc")
+    args.ablate = sorted(set(args.ablate))
 
     log_dir = Path(args.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -1333,7 +1384,8 @@ def main():
             args.cpc_preset = run_start["cpc_preset"]
         for key, value in (run_start.get("selection") or {}).items():
             setattr(args, key, value)
-        for key in ("min_unit_words", "decompositions", "score_cache", "cpc_attention", "paper_cpc"):
+        for key in ("min_unit_words", "decompositions", "score_cache", "cpc_attention", "paper_cpc",
+                    "paper_dates", "ablate"):
             if key in run_start:
                 setattr(args, key, run_start[key])
         if run_start.get("dycp"):
@@ -1358,6 +1410,8 @@ def main():
             "decompositions": args.decompositions,
             "provence": provence_settings(args),
             "paper_cpc": args.paper_cpc,
+            "paper_dates": args.paper_dates,
+            "ablate": args.ablate,
         })
         print(f"Logging full per-question results to {log_path}")
 
@@ -1372,13 +1426,14 @@ def main():
 
     selection_config = selection_from_args(args)
     settings = CompressionSettings(args.sentence_threshold, args.token_budget, args.recent_turns, args.min_unit_words,
-                                   paper=args.paper_cpc)
+                                   paper=args.paper_cpc, paper_turn_dates=args.paper_dates == "turn",
+                                   ablate=tuple(args.ablate))
     decompositions = load_decompositions(args.decompositions)
     tokenwise = build_tokenwise(
         args.compressor, cpc_max_seq_length=args.cpc_max_seq_length, cpc_preset=args.cpc_preset,
         project=args.project, location=args.location, selection=selection_config, score_cache=args.score_cache,
         cpc_attention=args.cpc_attention, dycp=dycp_settings(args),
-        provence=provence_settings(args),
+        provence=provence_settings(args), cpc_ablate=tuple(args.ablate),
     )
     primary_name ="baseline_full_history" if args.compressor == "none" else f"compressed_{args.compressor}"
     configs = [(primary_name, tokenwise)]
@@ -1432,6 +1487,8 @@ def main():
             "selection": asdict(selection_config),
             "decompositions": args.decompositions,
             "paper_cpc": args.paper_cpc,
+            "paper_dates": args.paper_dates if args.paper_cpc else None,
+            "ablate": args.ablate,
             "dycp": dycp_settings(args),
             "provence": provence_settings(args),
             "score_cache": args.score_cache,

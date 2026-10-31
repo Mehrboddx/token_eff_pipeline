@@ -19,8 +19,10 @@ BASE_MODELS = {
 LAYOUT_VERSION = "session-chunks-v1"
 
 
-def cpc_cache_key(preset: str, max_seq_length: int, attention: str = "bidirectional") -> str:
-    return f"cpc-{preset}-{max_seq_length}-{attention}-{LAYOUT_VERSION}"
+def cpc_cache_key(preset: str, max_seq_length: int, attention: str = "bidirectional",
+                  speaker_labels: bool = True, session_chunks: bool = True) -> str:
+    ablated = ("" if speaker_labels else "-nolabels") + ("" if session_chunks else "-flatchunks")
+    return f"cpc-{preset}-{max_seq_length}-{attention}-{LAYOUT_VERSION}{ablated}"
 
 
 class CPCCompressor:
@@ -29,7 +31,10 @@ class CPCCompressor:
     TokenWise uses for extractive scorers. Reuses the replicate/
     implementation directly so there's one copy of the encoding logic."""
 
-    def __init__(self, preset: str = "llama", **kwargs: Any) -> None:
+    def __init__(self, preset: str = "llama", speaker_labels: bool = True, session_chunks: bool = True,
+                 **kwargs: Any) -> None:
+        """`speaker_labels` / `session_chunks` False are ablations: no role
+        label before each turn, and chunks packed across sessions."""
         if preset not in TokenWise.PRETRAINED_PRESETS or preset not in BASE_MODELS:
             supported = ", ".join(sorted(set(TokenWise.PRETRAINED_PRESETS) & set(BASE_MODELS)))
             raise ValueError(f"Unsupported CPC preset '{preset}'. Supported presets: {supported}")
@@ -47,23 +52,30 @@ class CPCCompressor:
         from replicate.cpc_compressor import CPCCompressor as _CPCCompressor
 
         self._compressor = _CPCCompressor(**kwargs)
+        self.speaker_labels = speaker_labels
+        self.session_chunks = session_chunks
 
-    @staticmethod
-    def unit_prefixes(units: Sequence[Unit]) -> List[str]:
+    def unit_prefixes(self, units: Sequence[Unit]) -> List[str]:
         """A turn break + role label before the first sentence of each turn,
         a space otherwise -- conversational structure for the encoder."""
         prefixes = []
         previous_entry = None
         for unit in units:
-            prefixes.append(f"\n{role_label(unit)} " if unit.entry_index != previous_entry else " ")
+            label = f"{role_label(unit)} " if self.speaker_labels else ""
+            prefixes.append(f"\n{label}" if unit.entry_index != previous_entry else " ")
             previous_entry = unit.entry_index
         return prefixes
+
+    def unit_groups(self, units: Sequence[Unit]) -> list:
+        """Chunks never cross a change of group: one group per session, or a
+        single group (the whole history) when session chunks are off."""
+        return [unit.session if self.session_chunks else None for unit in units]
 
     def score_units(self, units: Sequence[Unit], queries: Sequence[str]) -> List[List[float]]:
         return self._compressor.score_texts(
             [unit.text for unit in units],
             self.unit_prefixes(units),
-            [unit.session for unit in units],
+            self.unit_groups(units),
             list(queries),
         )
 
@@ -79,6 +91,6 @@ class CPCCompressor:
         embeddings = self._compressor.embed_units(
             [unit.text for unit in units],
             self.unit_prefixes(units),
-            [unit.session for unit in units],
+            self.unit_groups(units),
         )
         return {index: embeddings[index].numpy() for index in ids}

@@ -23,6 +23,7 @@ class SelectionConfig:
     top_sessions: int = 0  # two-level: restrict to the best K sessions
     window: int = 0  # also take +-N neighbouring sentences in the same turn
     pair_turns: bool = False  # also take the best sentence of the partner turn
+    flat_output: bool = False  # ablation: plain joined sentences, no headers or labels to pay for
 
 
 def zscore(values: Sequence[float]) -> List[float]:
@@ -139,6 +140,8 @@ def select_units(
 
     def overhead(unit: Unit, sessions: set, entries: set) -> int:
         cost = 0
+        if config.flat_output:
+            return cost
         if grouped and unit.session not in sessions:
             if unit.session not in header_cost:
                 header_cost[unit.session] = count_tokens(session_header(unit))
