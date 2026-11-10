@@ -52,6 +52,10 @@ def timed_call(agent, described):
         "seconds": round(seconds, 3),
         "prompt_tokens": getattr(usage, "prompt_token_count", None),
         "output_tokens": getattr(usage, "candidates_token_count", None),
+        # Billed as output, but not part of candidates_token_count.
+        "thinking_tokens": getattr(usage, "thoughts_token_count", None),
+        # Implicit-cache hits are billed at a lower rate.
+        "cached_tokens": getattr(usage, "cached_content_token_count", None),
     }
 
 
