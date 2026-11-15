@@ -99,7 +99,8 @@ def history_tokens(item, settings):
     """cl100k tokens of the full history as the full-history baseline
     renders it (labels, date tags, captions) -- the size the paper reports."""
     described, _, _, _ = compress_question(item, None, CompressionSettings(token_budget=settings.token_budget))
-    return sum(len(ENCODING.encode(entry["text"])) for entry in described)
+    # disallowed_special=(): some histories contain "<|endoftext|>" as plain text.
+    return sum(len(ENCODING.encode(entry["text"], disallowed_special=())) for entry in described)
 
 
 def measure(item, tokenwise, settings, incremental):
