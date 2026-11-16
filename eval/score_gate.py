@@ -231,11 +231,17 @@ def main():
             accuracy, mean = evaluate(tune, picks, correct, tokens)
             if accuracy >= target:
                 options.append((mean, tau))
-        tau = min(options)[1] if options else min(TAUS)
+        # No tau keeps the reference's accuracy: fall back to the reference itself.
+        tau = min(options)[1] if options else None
         taus.append(tau)
-        rule_picks.update({q: rule_pick(features[q], tau, budgets) for q in ids if fold[q] == held_out})
-    print(f"\nRule gate (held-out; tau per fold {taus})")
+        rule_picks.update({q: reference if tau is None else rule_pick(features[q], tau, budgets)
+                           for q in ids if fold[q] == held_out})
+    print(f"\nRule gate (held-out; tau per fold {taus}, None = falls back to {names[reference]})")
     report("rule", ids, rule_picks, correct, tokens, names, reference)
+    print("\nRule gate trade-off (no fitting beyond tau itself)")
+    for tau in TAUS[::2]:
+        report(f"tau {tau}", ids, {q: rule_pick(features[q], tau, budgets) for q in ids},
+               correct, tokens, names, reference)
 
     # Learned gate, 5 folds; LoCoMo folds by conversation, LongMemEval by question.
     question_text = {q: judged[0][q]["question"] for q in ids}
@@ -244,6 +250,7 @@ def main():
     groups = [q.split("_")[0] for q in ids]
     from sklearn.model_selection import GroupKFold
     learned_picks, thetas = {}, []
+    out_of_fold = np.zeros((len(ids), reference))  # each question predicted by a model that never saw it
     for train, test in GroupKFold(n_splits=5).split(X, groups=groups):
         # theta from out-of-fold predictions inside the training part only.
         inner = np.zeros((len(train), reference))
@@ -262,9 +269,14 @@ def main():
         thetas.append(theta)
         models = fit_rungs(X, labels, train, reference)
         probabilities = predict(models, X, test)
+        out_of_fold[test] = probabilities
         learned_picks.update({ids[i]: cascade(probabilities[k], theta, reference) for k, i in enumerate(test)})
     print(f"\nLearned gate (held-out; theta per fold {thetas})")
     report("learned", ids, learned_picks, correct, tokens, names, reference)
+    print("\nLearned gate trade-off (out-of-fold predictions, theta swept)")
+    for theta in THETAS[::2]:
+        report(f"theta {theta:.2f}", ids, {q: cascade(out_of_fold[k], theta, reference) for k, q in enumerate(ids)},
+               correct, tokens, names, reference)
 
     ideal = {q: next((i for i in range(len(names)) if correct[q][i] >= correct[q][reference]), reference) for q in ids}
     print("\nIdeal gate (knows the verdicts; upper bound)")
