@@ -42,6 +42,7 @@ class TokenWise:
 
         self.model = model
         self.selection = selection or SelectionConfig()
+        self.secondary = None  # optional second scorer fused in (SelectionConfig.provence_weight)
         self._encoding = tiktoken.encoding_for_model("gpt-4")
         self._lexical = LexicalScorer()
         self._bm25 = BM25Scorer()
@@ -76,8 +77,10 @@ class TokenWise:
         scorer = self.model if self.model is not None else self._lexical
         primary = scorer.score_units(units, queries)
         lexical = self._bm25.score_units(units, queries) if self.selection.lexical_weight > 0 else None
+        secondary = (self.secondary.score_units(units, queries)
+                     if self.secondary is not None and self.selection.provence_weight > 0 else None)
 
-        scores = fuse_scores(primary, self.selection, lexical)
+        scores = fuse_scores(primary, self.selection, lexical, secondary)
         embeddings = None
         if self.selection.mmr_lambda > 0 and self.selection.mmr_similarity == "semantic":
             if not hasattr(scorer, "unit_embeddings"):

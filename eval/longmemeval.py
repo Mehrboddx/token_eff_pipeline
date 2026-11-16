@@ -257,13 +257,13 @@ def final_answer(text):
     return text[matches[-1].end():].strip().strip("*").strip() if matches else (text or "")
 
 
-def build_agent(project=PROJECT_ID, location=LOCATION, reader="plain"):
+def build_agent(project=PROJECT_ID, location=LOCATION, reader="plain", model=MODEL):
     # No tools: this eval is specifically about whether compression
     # preserves the fact needed to answer, not about tool-use behavior —
     # leaving calculator/exit_pipeline in just adds an unrelated variable.
     return Agent(
         name="longmemeval-agent",
-        model=MODEL,
+        model=model,
         system_prompt=universal_agent_prompt + (READER_NOTES if reader == "notes" else ""),
         project=project,
         location=location,
@@ -300,7 +300,17 @@ def build_tokenwise(compressor: str, cpc_max_seq_length: int = 6144, cpc_preset:
             CachedScorer(factory, score_cache, cpc_cache_key(cpc_preset, cpc_max_seq_length, cpc_attention, **encoder))
             if score_cache else factory()
         )
-        return TokenWise(model=model, selection=selection)
+        tokenwise = TokenWise(model=model, selection=selection)
+        if selection is not None and selection.provence_weight > 0:
+            # Fusion: Provence's sentence scores blended into CPC's (fuse_scores).
+            # Cached like CPC's, so a weight sweep scores each question once.
+            def provence_factory():
+                return ProvenceCompressor(model=PROVENCE_DEFAULT_MODEL)
+
+            key = "provence-" + PROVENCE_DEFAULT_MODEL.replace("/", "--") + "-v1"
+            tokenwise.secondary = (CachedScorer(provence_factory, score_cache, key)
+                                   if score_cache else provence_factory())
+        return tokenwise
 
     return TokenWise(selection=selection)
 
@@ -456,7 +466,7 @@ def compress_question(item, tokenwise, settings, decompositions=None, seeded_mem
     return Agent.describe_history(history), mode, question, compression_info(runner, memory, item, mode)
 
 
-def answer_from_compressed(agent, described_history):
+def answer_from_compressed(agent, described_history, usage=None):
     """The answering half of answer_question, split out so it can run on a
     different machine than the one that produced described_history (see
     --stage answer) -- one Gemini call, no compressor, no GPU. Rebuilds
@@ -469,6 +479,11 @@ def answer_from_compressed(agent, described_history):
         for entry in described_history
     ]
     response = agent.call_model(history)
+    if usage is not None:  # caller wants the token counts (answer cost)
+        meta = getattr(response, "usage_metadata", None)
+        usage.update({key: getattr(meta, attr, None) for key, attr in (
+            ("prompt_tokens", "prompt_token_count"), ("output_tokens", "candidates_token_count"),
+            ("thinking_tokens", "thoughts_token_count"))})
     return response.text or ""
 
 
@@ -563,6 +578,8 @@ def run_tag(stage, settings):
         parts.append(f"rec{selection['recency_weight']:g}")
     if selection.get("lexical_weight"):
         parts.append(f"hyb{selection['lexical_weight']:g}")
+    if selection.get("provence_weight"):
+        parts.append(f"fuse{selection['provence_weight']:g}")
     if settings.get("decompositions"):
         parts.append("mq")
     if settings.get("paper_cpc"):
@@ -924,11 +941,13 @@ def run_answer_stage(args, log_dir):
     source_settings = _resolve_source_settings(from_log_path, from_run_start)
 
     if args.resume is None:
-        suffix = "" if args.reader == "plain" else f"_{args.reader}"
+        suffix = ("" if args.reader == "plain" else f"_{args.reader}") \
+            + ("" if args.answer_model == MODEL else f"_{args.answer_model}") \
+            + (f"_{args.answer_tag}" if args.answer_tag else "")
         run_number, log_path, existing_results = stage_output(log_dir, ANSWER_DIR, from_log_path, from_run_start,
                                                               suffix=suffix)
 
-    agent = build_agent(project=args.project, location=args.location, reader=args.reader)
+    agent = build_agent(project=args.project, location=args.location, reader=args.reader, model=args.answer_model)
     log_gcs_blob = _gcs_blob(args.log_gcs_uri, log_path.name) if args.log_gcs_uri else None
 
     # A failed Gemini call (quota, auth, network) is retried on the next run
@@ -964,8 +983,9 @@ def run_answer_stage(args, log_dir):
 
             print(f"\n[{index}/{len(compress_rows)}] {crow['question_id']} ({crow['question_type']}): "
                   f"{crow['question'][:120]}", flush=True)
+            usage = {}
             try:
-                reply = answer_from_compressed(agent, crow["history"])
+                reply = answer_from_compressed(agent, crow["history"], usage=usage)
             except Exception as exc:
                 reply = f"[ERROR: {exc}]"
             # With --reader notes the reply is notes + reasoning + "Answer: ...";
@@ -987,6 +1007,8 @@ def run_answer_stage(args, log_dir):
                 "compressed_tokens": crow.get("compressed_tokens"),
                 "evidence": crow.get("evidence"),
                 **({"reader": args.reader, "reply": reply} if args.reader != "plain" else {}),
+                "answer_model": args.answer_model,
+                "usage": usage or None,
             }
             results.setdefault(row["config"], []).append(row)
             log({"event": "result", **row})
@@ -1020,6 +1042,7 @@ def run_answer_stage(args, log_dir):
 def selection_from_args(args):
     return SelectionConfig(
         lexical_weight=args.lexical_weight,
+        provence_weight=args.provence_weight,
         recency_weight=args.recency_weight,
         mmr_lambda=args.mmr_lambda,
         mmr_similarity=args.mmr_similarity,
@@ -1309,6 +1332,17 @@ def main():
              "that line is graded. Logged next to the plain answers with a '_notes' suffix.",
     )
     parser.add_argument(
+        "--answer-model", default=MODEL,
+        help="--stage answer: the answering model (default the paper's). The judge stays on the default "
+             "model either way. A non-default model adds its name to the answer log's suffix. Preview "
+             "models need --location global.",
+    )
+    parser.add_argument(
+        "--answer-tag", default=None, metavar="TAG",
+        help="--stage answer: extra suffix for the answer log (e.g. 'rep2'), to answer the same "
+             "contexts again as a separate run -- measures how much two identical runs disagree.",
+    )
+    parser.add_argument(
         "--from-log", default=None, metavar="PATH",
         help="A --stage compress log to read compressed histories from (required for --stage "
              "answer), a --stage full/answer log to re-grade (required for --stage judge), or "
@@ -1322,6 +1356,10 @@ def main():
                                 "neighbour from the same turn.")
     selection.add_argument("--lexical-weight", type=float, default=0.0,
                            help="Hybrid scoring: weight of BM25 in the fused score (0 = off).")
+    selection.add_argument("--fuse-provence", type=float, default=0.0, dest="provence_weight",
+                           help="--compressor cpc only: blend Provence's z-scored sentence scores into CPC's "
+                                "with this weight (0 = off, 0.5 = equal). Provence scores are cached with "
+                                "--score-cache like CPC's.")
     selection.add_argument("--recency-weight", type=float, default=0.0,
                            help="Additive bonus (z units) for later sentences (0 = off).")
     selection.add_argument("--mmr", type=float, default=0.0, dest="mmr_lambda",

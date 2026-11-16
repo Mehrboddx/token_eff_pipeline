@@ -16,6 +16,7 @@ class SelectionConfig:
     the default is plain greedy top-k under the budget."""
 
     lexical_weight: float = 0.0  # hybrid: weight of BM25 in the fused score
+    provence_weight: float = 0.0  # fusion: weight of Provence's z-scores blended into the primary scorer's
     recency_weight: float = 0.0  # additive bonus (in z units) for later units
     mmr_lambda: float = 0.0  # penalty (in z units) per unit of similarity
     mmr_pool: int = 400  # MMR only re-ranks the top of the list
@@ -41,18 +42,23 @@ def fuse_scores(
     primary: Sequence[Sequence[float]],
     config: SelectionConfig,
     lexical: Optional[Sequence[Sequence[float]]] = None,
+    secondary: Optional[Sequence[Sequence[float]]] = None,
 ) -> List[float]:
     """One score per unit. Each query's scores are z-normalized (so
     sub-queries with different score ranges are comparable), optionally
-    blended with that query's BM25 scores, then max-pooled across queries:
-    a unit only needs to answer one sub-question to rank highly, which is
-    what gives multi-hop questions coverage of every fact they need."""
+    blended with that query's BM25 scores and/or a second model's scores
+    (Provence fusion), then max-pooled across queries: a unit only needs to
+    answer one sub-question to rank highly, which is what gives multi-hop
+    questions coverage of every fact they need."""
     per_query = []
     for index, scores in enumerate(primary):
         fused = zscore(scores)
         if lexical is not None and config.lexical_weight > 0:
             weight = config.lexical_weight
             fused = [(1 - weight) * a + weight * b for a, b in zip(fused, zscore(lexical[index]))]
+        if secondary is not None and config.provence_weight > 0:
+            weight = config.provence_weight
+            fused = [(1 - weight) * a + weight * b for a, b in zip(fused, zscore(secondary[index]))]
         per_query.append(fused)
 
     final = [max(column) for column in zip(*per_query)]
