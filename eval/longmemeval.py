@@ -240,14 +240,31 @@ def grade(predicted, reference):
     return missing <= tolerance
 
 
-def build_agent(project=PROJECT_ID, location=LOCATION):
+# --reader notes: Chain-of-Note style reading (LongMemEval, Wu et al. 2025,
+# found up to +10 points from "extract the relevant notes, then reason").
+READER_NOTES = """
+
+When the conversation includes "Relevant earlier context", read it in two steps before you answer:
+1. Notes: list every piece of the earlier context that bears on the question, each with the date of its session. Resolve relative times ("yesterday", "last week", "two months ago") against that session date.
+2. Reasoning: work from the notes to the answer. If a fact changed over time, the most recent session wins; for counts and totals, check the notes for every instance.
+Write the notes and reasoning first. End your reply with one final line that starts with "Answer:" followed by the answer alone."""
+ANSWER_MARKER = re.compile(r"^\s*\**\s*answer\s*\**\s*:\s*\**", re.IGNORECASE | re.MULTILINE)
+
+
+def final_answer(text):
+    """The text after the last 'Answer:' line of a --reader notes reply (whole reply if none)."""
+    matches = list(ANSWER_MARKER.finditer(text or ""))
+    return text[matches[-1].end():].strip().strip("*").strip() if matches else (text or "")
+
+
+def build_agent(project=PROJECT_ID, location=LOCATION, reader="plain"):
     # No tools: this eval is specifically about whether compression
     # preserves the fact needed to answer, not about tool-use behavior —
     # leaving calculator/exit_pipeline in just adds an unrelated variable.
     return Agent(
         name="longmemeval-agent",
         model=MODEL,
-        system_prompt=universal_agent_prompt,
+        system_prompt=universal_agent_prompt + (READER_NOTES if reader == "notes" else ""),
         project=project,
         location=location,
         tools=None,
@@ -562,11 +579,12 @@ ANSWER_DIR = "gemini_runs"
 JUDGE_DIR = "judge_runs"
 
 
-def stage_output(log_dir, subdir, from_log_path, from_run_start):
+def stage_output(log_dir, subdir, from_log_path, from_run_start, suffix=""):
     """(run_number, path, results already there) for an answer/judge stage
     reading `from_log_path`. Re-running the same command continues that
-    file, skipping questions it already holds."""
-    path = Path(log_dir) / subdir / from_log_path.name
+    file, skipping questions it already holds. `suffix` (e.g. '_notes' for
+    --reader notes) keeps a variant's answers apart from the plain ones."""
+    path = Path(log_dir) / subdir / f"{from_log_path.stem}{suffix}{from_log_path.suffix}"
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = load_run_log(path)[1] if path.exists() else []
     if existing:
@@ -906,9 +924,11 @@ def run_answer_stage(args, log_dir):
     source_settings = _resolve_source_settings(from_log_path, from_run_start)
 
     if args.resume is None:
-        run_number, log_path, existing_results = stage_output(log_dir, ANSWER_DIR, from_log_path, from_run_start)
+        suffix = "" if args.reader == "plain" else f"_{args.reader}"
+        run_number, log_path, existing_results = stage_output(log_dir, ANSWER_DIR, from_log_path, from_run_start,
+                                                              suffix=suffix)
 
-    agent = build_agent(project=args.project, location=args.location)
+    agent = build_agent(project=args.project, location=args.location, reader=args.reader)
     log_gcs_blob = _gcs_blob(args.log_gcs_uri, log_path.name) if args.log_gcs_uri else None
 
     # A failed Gemini call (quota, auth, network) is retried on the next run
@@ -945,9 +965,12 @@ def run_answer_stage(args, log_dir):
             print(f"\n[{index}/{len(compress_rows)}] {crow['question_id']} ({crow['question_type']}): "
                   f"{crow['question'][:120]}", flush=True)
             try:
-                predicted = answer_from_compressed(agent, crow["history"])
+                reply = answer_from_compressed(agent, crow["history"])
             except Exception as exc:
-                predicted = f"[ERROR: {exc}]"
+                reply = f"[ERROR: {exc}]"
+            # With --reader notes the reply is notes + reasoning + "Answer: ...";
+            # only the final answer is graded and judged.
+            predicted = reply if args.reader == "plain" or reply.startswith("[ERROR") else final_answer(reply)
 
             correct = grade(predicted, crow["reference"])
             compressed_context = _compressed_context_from_described(crow.get("history"), crow.get("compression_mode"))
@@ -963,6 +986,7 @@ def run_answer_stage(args, log_dir):
                 "compressed_context": compressed_context,
                 "compressed_tokens": crow.get("compressed_tokens"),
                 "evidence": crow.get("evidence"),
+                **({"reader": args.reader, "reply": reply} if args.reader != "plain" else {}),
             }
             results.setdefault(row["config"], []).append(row)
             log({"event": "result", **row})
@@ -1277,6 +1301,12 @@ def main():
              "them to --decompositions (for multi-query scoring). 'recall': text-matched "
              "evidence recall of an existing log's compressed contexts (--from-log) -- works on "
              "logs from before selections were recorded; no model calls.",
+    )
+    parser.add_argument(
+        "--reader", choices=["plain", "notes"], default="plain",
+        help="--stage answer: 'notes' asks the model to list the relevant context with session dates, "
+             "reason, then give a final 'Answer:' line (Chain-of-Note reading, after LongMemEval); only "
+             "that line is graded. Logged next to the plain answers with a '_notes' suffix.",
     )
     parser.add_argument(
         "--from-log", default=None, metavar="PATH",

@@ -41,13 +41,15 @@ ENCODING = tiktoken.get_encoding("cl100k_base")
 # dataset -> encoder -> [(level name, run tag)], cheapest first; full history last.
 LADDERS = {
     "longmemeval_s": {
-        "mistral": [("2k", "run0003_compress_cpc-mistral_b2000"), ("4k", "run0001_compress_cpc-mistral_b4000"),
+        "mistral": [("0.5k", "run0047_compress_cpc-mistral_b500"), ("1k", "run0048_compress_cpc-mistral_b1000"),
+                    ("2k", "run0003_compress_cpc-mistral_b2000"), ("4k", "run0001_compress_cpc-mistral_b4000"),
                     ("full", "run0039_full_fullhistory")],
         "llama": [("2k", "run0005_compress_cpc-llama_b2000"), ("4k", "run0004_compress_cpc-llama_b4000"),
                   ("full", "run0039_full_fullhistory")],
     },
     "locomo": {
-        "mistral": [("4k", "run0021_compress_locomo_cpc-mistral_b4000"), ("full", "run0041_full_locomo_fullhistory")],
+        "mistral": [("2k", "run0049_compress_locomo_cpc-mistral_b2000"), ("4k", "run0021_compress_locomo_cpc-mistral_b4000"),
+                    ("8k", "run0050_compress_locomo_cpc-mistral_b8000"), ("full", "run0041_full_locomo_fullhistory")],
     },
 }
 

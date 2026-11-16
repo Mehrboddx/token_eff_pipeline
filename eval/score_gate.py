@@ -152,13 +152,62 @@ def evaluate(ids, picks, correct, tokens):
             statistics.mean(tokens[q][picks[q]] for q in ids))
 
 
+def mix_frontier(ids, correct, tokens, names):
+    """Fixed budgets on the upper concave hull of (mean tokens, accuracy):
+    the best accuracy any random mix of two fixed budgets reaches at each
+    token level. A budget below the hull (e.g. one beaten by a cheaper one)
+    is never worth mixing in."""
+    points = sorted((statistics.mean(tokens[q][i] for q in ids), statistics.mean(correct[q][i] for q in ids), i)
+                    for i in range(len(names)))
+    hull = []
+    for point in points:
+        if hull and point[1] <= hull[-1][1]:
+            continue  # more tokens, no better: never on the frontier
+        while len(hull) >= 2:
+            (x1, y1, _), (x2, y2, _) = hull[-2], hull[-1]
+            if (y2 - y1) * (point[0] - x1) <= (point[1] - y1) * (x2 - x1):  # hull[-1] on or below the chord
+                hull.pop()
+            else:
+                break
+        hull.append(point)
+    return hull
+
+
+def versus_mix(ids, picks, correct, tokens, names, resamples=10_000, seed=0):
+    """The gate against the best random mix of two fixed budgets with the
+    same mean tokens: (mix accuracy, gate - mix, bootstrap p). Per question
+    the mix scores (1-w)*correct[i] + w*correct[j]; the difference is
+    resampled by question, with w held fixed."""
+    _, mean = evaluate(ids, picks, correct, tokens)
+    hull = mix_frontier(ids, correct, tokens, names)
+    fixed = {i: x for x, _, i in hull}
+    order = [i for _, _, i in hull]
+    if mean <= fixed[order[0]]:
+        return None  # cheaper than every fixed budget: no mix to compare with
+    if mean >= fixed[order[-1]]:
+        i = j = order[-1]  # beyond the frontier: the best fixed budget is cheaper and at least as good
+        w = 0.0
+    else:
+        k = next(k for k in range(len(order) - 1) if fixed[order[k]] <= mean <= fixed[order[k + 1]])
+        i, j = order[k], order[k + 1]
+        w = (mean - fixed[i]) / (fixed[j] - fixed[i])
+    diff = np.array([correct[q][picks[q]] - ((1 - w) * correct[q][i] + w * correct[q][j]) for q in ids])
+    rng = np.random.default_rng(seed)
+    boot = diff[rng.integers(0, len(diff), (resamples, len(diff)))].mean(axis=1)
+    p = min(1.0, 2 * min((boot <= 0).mean(), (boot >= 0).mean()))
+    accuracy, _ = evaluate(ids, picks, correct, tokens)
+    return accuracy - diff.mean(), diff.mean(), p
+
+
 def report(label, ids, picks, correct, tokens, names, reference):
     accuracy, mean = evaluate(ids, picks, correct, tokens)
     better = sum(correct[q][picks[q]] and not correct[q][reference] for q in ids)
     worse = sum(correct[q][reference] and not correct[q][picks[q]] for q in ids)
     share = Counter(names[picks[q]] for q in ids)
+    mix = versus_mix(ids, picks, correct, tokens, names)
+    mix_text = f"; random mix {100 * mix[0]:.1f} ({100 * mix[1]:+.1f}, p {mix[2]:.3f})" if mix else ""
     print(f"  {label:<12} accuracy {100 * accuracy:5.1f}, mean tokens {mean:>7,.0f}, "
-          f"vs fixed {names[reference]} {better} better / {worse} worse; picks "
+          f"vs fixed {names[reference]} {better} better / {worse} worse{mix_text}; picks "
           + ", ".join(f"{n} {100 * share[n] / len(ids):.0f}%" for n in names))
 
 
@@ -202,7 +251,7 @@ def main():
 
     ladder = LADDERS[args.dataset]["mistral"]
     names = [name for name, _ in ladder]
-    budgets = [int(name[:-1]) * 1000 for name in names if name != "full"]
+    budgets = [int(float(name[:-1]) * 1000) for name in names if name != "full"]
     reference = names.index(args.reference or ("full" if args.dataset == "locomo" else "4k"))
     judged = [results(f"logs/judge_runs/eval_longmemeval_{tag}.jsonl") for _, tag in ladder]
     compressed = [results(f"logs/eval_longmemeval_{tag}.jsonl") for _, tag in ladder]
