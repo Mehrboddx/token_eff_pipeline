@@ -260,6 +260,14 @@ NER + fusion (running).
 |---|---|---|---|---|
 | NER 0.3 | 79.7 | 98 / 80 | 0.20 | 22 |
 | LLM v1 0.3 | 79.9 | 86 / 64 | 0.09 | 19 |
+| **NER 0.3 + Provence fusion 0.25** | **82.1** | **124 / 68** | **< 0.001** | **29** |
+
+NER + fusion per category: multi-hop 57.4 → 67.0, single-hop 87.0 → 90.5, temporal 77.9 → 78.2,
+open-domain 67.7 → 66.7. Evidence-conditioned: full evidence gained on 85 Qs (29 → 55 right),
+lost on 9 (5 → 5); flips on changed Qs 30 / 4. At 4k it beats fixed 8k (80.9) and
+self-escalation to full history (81.9, 9.7k tokens) — those two were not temperature 0, so
+compare loosely. Missing for attribution: fusion alone at temperature 0 (Gemini budget spent;
+first answer when budget allows).
 
 Overall gains are small and not significant, because most flips are reader noise: on questions
 whose evidence status did not change, NER has 77 better / 76 worse. Splitting by evidence:
