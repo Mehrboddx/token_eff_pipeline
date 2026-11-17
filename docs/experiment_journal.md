@@ -254,6 +254,26 @@ examples. Adding LLM keys to NER helps little (27 → 29). NER and fusion stack:
 than 8k reaches (24) at half the tokens. Answering at temperature 0: base, NER 0.3, LLM v1 0.3,
 NER + fusion (running).
 
+**Answers (Gemini 2.5 Flash, temperature 0, LoCoMo 4k, vs base run 0021 t0 = 78.5):**
+
+| variant | accuracy | flips (better/worse) | McNemar p | 41 cases right (base 5) |
+|---|---|---|---|---|
+| NER 0.3 | 79.7 | 98 / 80 | 0.20 | 22 |
+| LLM v1 0.3 | 79.9 | 86 / 64 | 0.09 | 19 |
+
+Overall gains are small and not significant, because most flips are reader noise: on questions
+whose evidence status did not change, NER has 77 better / 76 worse. Splitting by evidence:
+
+| variant | Qs where full evidence gained | accuracy there | Qs where lost | accuracy there | flips on changed Qs | sign test |
+|---|---|---|---|---|---|---|
+| NER 0.3 | 65 | 23 → 41 | 9 | 3 → 2 | 21 / 4 | p = 0.0009 |
+| LLM v1 0.3 | 43 | 13 → 26 | 8 | 4 → 5 | 16 / 2 | p = 0.0013 |
+
+So recovered evidence does turn into right answers (unlike arXiv 2608.27925's null result); the
+effect is real but covers only ~4% of questions, and a ±5% context-perturbation noise floor
+hides it in the overall number. For the paper: report the evidence-conditioned test next to the
+overall accuracy.
+
 ## Idea queue
 
 1. Chain-of-Note reader — LongMemEval done (n.s.), LoCoMo running.
