@@ -207,6 +207,53 @@ window holds ~3% of sessions and all gold sessions for 76/89. They score 76.9 at
 86.8 full. On LongMemEval, "last month" / "past two weeks" windows cover nearly all sessions
 (haystacks span a few weeks), so (A) does little there.
 
+## 2026-11-17 · Entity keys (priority — your call: run even past the Gemini budget)
+
+Two sources of per-sentence entity keys (core/entities.py, eval/entity_keys.py), same scorer:
+idf-weighted overlap of a sentence's keys with the question's, plus a bridge via rare noun phrases
+of CPC's top 3 sentences; blended into the z-scores with `--entity-weight`. Only the sentences are
+shown to the reader.
+- **NER**: spaCy (CPU) — entities, noun phrases, appositive aliases, speaker for "I/my". LoCoMo:
+  14,782 units in 23 s.
+- **Small LLM**: Qwen2.5-1.5B-Instruct on GPU 1, one generation per sentence ("entity | category |
+  value"): 14,782 units in ~5 min, 5 GiB peak. Facts are mostly right ("John | child | Sara",
+  "Caroline | relationship status | single", "John | hometown | West County") but categories are
+  overused ("occupation" 3,139×) and v1's few-shot examples were LoCoMo sentences → copied
+  facts on those sentences. v2 uses invented examples (re-run queued).
+
+LoCoMo 4k, evidence (no model calls; "41 cases" = dropped-evidence failures recovered):
+
+| variant | recall | date Qs | count/list Qs | multi-hop | 41 cases |
+|---|---|---|---|---|---|
+| CPC 4k | 91.7 | 91.9 | 88.3 | 88.0 | 0 |
+| + date focus 2 | 92.0 | **99.0** | 88.3 | 88.0 | 7 |
+| + session cover (1–2) | 91.7 | 91.9 | 88.3 | 88.0 | 0 |
+| + NER keys 0.15 | 93.4 | 96.0 | 91.3 | 89.9 | 17 |
+| + **NER keys 0.3** | **94.4** | 99.0 | 92.0 | 91.3 | **27** |
+| + LLM keys v1 0.15 | 93.0 | 93.9 | 91.3 | 89.7 | 19 |
+| + LLM keys v1 0.3 | 93.6 | 94.9 | 92.0 | 90.9 | 22 |
+| + Provence fusion 0.25 | 95.5 | 98.0 | 95.8 | 94.3 | 30 |
+| CPC 8k (twice the tokens) | 96.8 | 97.0 | 96.0 | 95.8 | 24 |
+
+Session cover does nothing: at 4k every session's best sentence is already in; what drops are
+second/third mentions. NER beats the small LLM at equal weight (it keeps the sentence's own words;
+the LLM's keys are fewer and coarser).
+
+Combinations (runs 0081–0085, computed on the server):
+
+| variant | recall | all evidence kept | 41 cases |
+|---|---|---|---|
+| + LLM keys v2 0.3 (invented examples) | 93.2 | 93.2 | 16 |
+| + NER ∪ LLM v2 keys 0.3 | 94.1 | 94.2 | 29 |
+| + NER keys 0.5 | 94.4 | 94.5 | 31 |
+| + NER 0.3 + date focus 2 | 94.5 | 94.9 | 28 |
+| + **NER 0.3 + Provence fusion 0.25** | **95.9** | **96.1** | **35** |
+
+LLM v2 without the leak is *lower* than v1 (16 vs 22 cases) — part of v1's gain was the copied
+examples. Adding LLM keys to NER helps little (27 → 29). NER and fusion stack: 35/41 at 4k, more
+than 8k reaches (24) at half the tokens. Answering at temperature 0: base, NER 0.3, LLM v1 0.3,
+NER + fusion (running).
+
 ## Idea queue
 
 1. Chain-of-Note reader — LongMemEval done (n.s.), LoCoMo running.
