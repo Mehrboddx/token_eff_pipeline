@@ -64,7 +64,11 @@ def collect(dataset, min_words, done):
     todo = {}
     items = load_items(dataset)
     for number, item in enumerate(items, 1):
-        digest = hashlib.sha1(json.dumps(item["haystack_sessions"], sort_keys=True).encode()).hexdigest()
+        # Fingerprint without the per-question evidence flags (has_answer), so
+        # LoCoMo's 1,540 questions over 10 conversations seed 10 histories.
+        sessions = [[{k: v for k, v in turn.items() if k != "has_answer"} for turn in session]
+                    for session in item["haystack_sessions"]]
+        digest = hashlib.sha1(json.dumps(sessions, sort_keys=True).encode()).hexdigest()
         if digest in seen_haystacks:
             continue
         seen_haystacks.add(digest)
