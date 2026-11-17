@@ -41,12 +41,14 @@ Write one fact per line as: entity | category | value
 The category is a short general word or phrase, for example: child, parent, sibling, partner, relationship status, friend, pet, occupation, workplace, education, home, hometown, origin, hobby, instrument, sport, possession, purchase, event, trip, health, preference, goal, plan, achievement, belief, inspiration.
 Keep values short (a name, a thing, a place). Write NONE if the sentence states no fact about anyone."""
 
+# Invented sentences -- never taken from a benchmark, so no test sentence can
+# be answered by copying an example.
 LLM_EXAMPLES = [
-    ("Speaker: John\nPrevious: Thanks, Maria!\nSentence: That picture was from a trip we took last year for my daughter Sara's birthday - so much fun!",
-     "John | child | Sara (daughter)\nJohn | trip | trip for Sara's birthday"),
-    ("Speaker: Caroline\nPrevious: I'm thrilled to make a family for kids who need one.\nSentence: It'll be tough as a single parent, but I'm up for the challenge!",
-     "Caroline | relationship status | single\nCaroline | goal | adopt children as a single parent"),
-    ("Speaker: Nate\nPrevious: Hey, how was your week?\nSentence: Yeah, it was fine, thanks for asking.",
+    ("Speaker: Priya\nPrevious: The cake looks amazing!\nSentence: Thanks, I baked it for my nephew Omar's graduation party on Saturday.",
+     "Priya | nephew | Omar\nOmar | event | graduation party"),
+    ("Speaker: Tom\nPrevious: How are things since the move?\nSentence: Honestly, living alone after the divorce is quiet, but I like my new job at the bakery.",
+     "Tom | relationship status | divorced\nTom | home | lives alone\nTom | occupation | works at a bakery"),
+    ("Speaker: Lena\nPrevious: Hey, how was your week?\nSentence: Yeah, it was fine, thanks for asking.",
      "NONE"),
 ]
 

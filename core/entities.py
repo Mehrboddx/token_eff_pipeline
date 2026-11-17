@@ -93,10 +93,17 @@ class EntityIndex:
     eval/entity_keys.py) and the question-time scorer."""
 
     def __init__(self, paths: Iterable[str]) -> None:
+        # Several files (e.g. ner + llm) are merged per unit as the union of keys.
         self.keys: Dict[str, Dict[str, List[str]]] = {}
         for path in paths:
             with open(path, encoding="utf-8") as handle:
-                self.keys.update(json.load(handle))
+                for key, found in json.load(handle).items():
+                    if key not in self.keys:
+                        self.keys[key] = found
+                    else:
+                        merged = self.keys[key]
+                        self.keys[key] = {part: sorted(set(merged.get(part, [])) | set(found.get(part, [])))
+                                          for part in ("t", "c", "e")}
 
     def unit_keys(self, unit: Unit) -> Dict[str, List[str]]:
         found = self.keys.get(unit_key(unit))
