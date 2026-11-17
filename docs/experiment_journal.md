@@ -121,6 +121,19 @@ only single-session-assistant drops (83.9 → 80.4). Measured per question: 6.4k
 0.73k thinking, 0.11k output. Gemini 2.5 Flash on the full history reaches 80.0 with 107k
 prompt tokens per question; CPC-Mem at 4k + a stronger reader is +7 points with 6% of the tokens.
 
+**Gemini 3.1 Pro on the same 4k contexts: 88.4 vs 83.0** (41 better / 14 worse, McNemar
+p < 0.001); vs 3.6 Flash 88.4 vs 87.2 (21 / 15, p 0.41 — level). Preference 53.3 → **76.7**
+(Pro tailors advice to the memory without being told), multi-session 79.7 → 86.5, knowledge-update
+87.2 → 91.0, single-session-user 88.6 → 94.3, temporal 87.2 → 91.0; assistant-recall still flat
+(83.9 → 82.1: the truncated lists, see below). Per question: 6.4k prompt, 0.61k thinking, 0.10k output.
+
+| Reader on CPC-Mem 4k | LongMemEval | vs 2.5 Flash |
+|---|---|---|
+| Gemini 2.5 Flash | 83.0 | — |
+| Gemini 3.6 Flash | 87.2 | +4.2 (p 0.006) |
+| Gemini 3.1 Pro | **88.4** | +5.4 (p < 0.001) |
+| (2.5 Flash, full history, 107k tokens) | 80.0 | |
+
 ## 2026-11-17 · CPC + Provence score fusion (GPU, running)
 
 Idea: the two scorers are complementary — CPC wins on LongMemEval (83.0 vs 79.4), Provence on
@@ -163,3 +176,46 @@ untagged ("dangling") image; not deleted — your call (`docker image prune` rem
    turn of the best-scoring assistant sentence. Our weakest LongMemEval category at 4k (83.9).
 5. Fact-augmented units: short LLM-extracted user facts per session added as extra candidate
    units (LongMemEval: +5 QA). Costs one Gemini pass over every session — check cost first.
+8. Largest-gap budget (LooComp, arXiv 2603.09222): keep the units above the largest gap in the
+   sorted scores. A close relative of our rule gate, which lost to fixed budgets — low priority.
+9. Full history + Gemini 3.6 Flash on a ~100-question stratified subset (~$4): needed to say
+   whether CPC-Mem + strong reader beats, or only undercuts in cost, a strong reader on full text.
+
+## 2026-11-17 · Why the reader fails with the evidence in context
+
+Failure reading, Gemini 3.6 Flash on 4k contexts (no model calls):
+- **Assistant-recall (11 wrong / 56):** 10 ask for one item of a long list the assistant once gave
+  ("the 7th job", "the 27th parameter", "the last venue"). Sentence selection keeps fragments of
+  that turn; the reader even says the list "was truncated". Turn-level evidence recall (1/1) hides
+  this. → **Provenance replay** (`--replay-turn`): for questions that ask what the assistant said,
+  keep the turn of the best-scoring assistant sentence whole. Cue regex hits 54/56 assistant
+  questions, 0 other LongMemEval questions, 0 LoCoMo questions (caveat: wording written after
+  looking at these questions). Queued on the server (4k, 4k + fuse 0.25, 1k).
+- **Preference (12 wrong / 30):** evidence kept every time, but the answer is generic advice that
+  ignores what the memory says about the user. → **Memory-aware reader** (`--reader memory`):
+  the system prompt says the earlier context is the agent's memory of this user and asks to build
+  advice on it. Gemini-only test, after the temperature-0 runs.
+
+**Memory-aware reader, result** (Gemini 2.5 Flash, temperature 0, run 1's 4k contexts):
+**84.2** vs 82.0 / 82.6 for the two plain temperature-0 runs (overall n.s., p 0.14 / 0.30).
+All of it is preference: **40.0 / 46.7 → 76.7** (12 fixed / 1 broken and 9 / 0, exact
+p 0.003 / 0.004), level with Gemini 3.1 Pro's 76.7 without the prompt. The other 470 questions are
+untouched (84.7 → 84.7, 17 / 17 and 18 / 19 flips). So Gemini 2.5 Flash reads the compressed
+excerpt as background unless told it is the user's memory; one paragraph of system prompt closes
+the preference gap to a much stronger model. Caveat: written after reading 12 preference failures
+of the 3.6 Flash run (same 30 questions); the prompt is generic, but a held-out check (LoCoMo has no
+preference category) is not possible here. Make it the default reader for everything below.
+
+## 2026-11-17 · Temperature-0 answers
+
+Run 1's 4k contexts answered twice at temperature 0 (tags a, b): **82.0 vs 82.6, 27 flips**
+(15 / 12, p 0.70), against 52 flips for two runs at the default temperature 1.0. Only 266 of 500
+answer texts are word-for-word identical — Gemini 2.5 Flash's thinking is not deterministic even at
+temperature 0. Temperature 0 halves the noise but does not remove it: the run-to-run difference
+has a standard deviation of about 1 point (√27 / 500), vs about 1.4 at temperature 1.0.
+Temperature-0 accuracy (82.3 mean) is level with the default (83.0 / 80.2).
+
+**Decision:** all further answer runs at temperature 0, compared against the mean of runs a and b;
+an effect counts only if it beats both (or McNemar p < 0.05 against each). For the paper, the
+main configurations should be re-answered at temperature 0 (≥ 2 runs each). The stronger-reader
+gains above (+4.2, +5.4) are several times this noise.
