@@ -178,6 +178,35 @@ a cheaper variant would run Provence only on CPC's top few hundred candidates.
 Server note: rebuilding `longmemeval-eval:latest` in place leaves the previous build as an
 untagged ("dangling") image; not deleted — your call (`docker image prune` removes them).
 
+## 2026-11-17 · Evidence that scores low
+
+Questions answered wrong at 4k but right with full history, where a gold evidence turn was dropped
+(no sentence of it in the context): LoCoMo 41 of 143 such questions (22 multi-hop), LongMemEval 6.
+The dropped evidence falls into five patterns (examples from the logs):
+1. **Aside inside an off-topic sentence** — "I've used Trello in my previous role *as a marketing
+   specialist*…" (Q: previous occupation); "…BBQ sauce recipes. *By the way, I just got a smoker
+   today*" (Q: kitchen appliance bought 10 days ago); "…playing my violin" (Q: instruments).
+2. **Bridge sentence that shares no words with the question** — "my old area was hit by a flood"
+   kept, "improving my old area, *West County*" dropped (Q: what area was hit by a flood).
+3. **Answer only by inference** — "tough as a *single parent*" (Q: relationship status);
+   "their *brother* would be OK" (Q: how many children).
+4. **Every instance needed** — count/list questions: the budget fills with the clearest mention;
+   "my daughter *Sara's* birthday" (Q: names of John's children) dropped.
+5. **Date-pinned** — "investment for a competition four weeks ago": the session exactly four weeks
+   earlier says "I got my own set of sculpting tools… today". Session dates are not scored.
+Some LoCoMo evidence labels point at filler turns ("Oh? Are you going to invite your tournament
+friends?"), so 41 overstates it.
+
+Fixes, cheapest first: (A) date-aware focus `--time-focus`, (D) session coverage for count/list
+questions `--session-cover` — both selection-only, sweep queued (runs 69–77); (B) second CPC
+pass with question + top sentences as query (bridges); (C) split asides into their own units;
+(E) LLM-extracted facts at storage time.
+
+(A) check without scores: LoCoMo has 91 questions with an explicit date ("on 3 June, 2023"); the
+window holds ~3% of sessions and all gold sessions for 76/89. They score 76.9 at 4k, 82.4 at 8k,
+86.8 full. On LongMemEval, "last month" / "past two weeks" windows cover nearly all sessions
+(haystacks span a few weeks), so (A) does little there.
+
 ## Idea queue
 
 1. Chain-of-Note reader — LongMemEval done (n.s.), LoCoMo running.

@@ -27,6 +27,7 @@ class SelectionConfig:
     replay_turn: bool = False  # assistant-recall questions: keep the best assistant turn whole
     time_focus: float = 0.0  # bonus (z units) for sessions inside the time window the question names
     session_cover: float = 0.0  # count/list questions: first take each session's best unit with z >= this
+    feedback: int = 0  # second pass: re-score with the question + this many top sentences as the query
     flat_output: bool = False  # ablation: plain joined sentences, no headers or labels to pay for
 
 

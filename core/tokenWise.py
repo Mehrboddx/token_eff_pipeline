@@ -3,7 +3,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from core.scorers import BM25Scorer, LexicalScorer
 from core.selection import (AGGREGATE, ASSISTANT_RECALL, SelectionConfig, fuse_scores, mmr_pool_ids,
-                            replay_turn_scores, select_units, session_cover_scores, time_focus_scores)
+                            replay_turn_scores, select_units, session_cover_scores, time_focus_scores,
+                            zscore)
 from core.units import Unit, render_flat, render_units
 
 
@@ -82,6 +83,16 @@ class TokenWise:
                      if self.secondary is not None and self.selection.provence_weight > 0 else None)
 
         scores = fuse_scores(primary, self.selection, lexical, secondary)
+        if self.selection.feedback > 0:
+            # Pseudo-relevance feedback: a bridge sentence ("improving my old area,
+            # West County") shares no words with the question ("what area was hit by
+            # a flood?") but does with the best first-pass sentence ("my old area
+            # was hit by a flood"). Re-score with both as the query, max-pooled.
+            top = sorted(range(len(units)), key=lambda index: (scores[index], index),
+                         reverse=True)[: self.selection.feedback]
+            expanded = "\n".join([query, *(units[index].text for index in top)])
+            second = zscore(scorer.score_units(units, [expanded])[0])
+            scores = [max(first, again) for first, again in zip(scores, second)]
         if self.selection.time_focus > 0:
             scores = time_focus_scores(units, scores, query, self.selection.time_focus)
         if self.selection.session_cover > 0 and AGGREGATE.search(query):

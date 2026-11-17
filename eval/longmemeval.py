@@ -587,6 +587,8 @@ def run_tag(stage, settings):
         parts.append(f"time{selection['time_focus']:g}")
     if selection.get("session_cover"):
         parts.append(f"cover{selection['session_cover']:g}")
+    if selection.get("feedback"):
+        parts.append(f"fb{selection['feedback']}")
     if selection.get("top_sessions"):
         parts.append(f"top{selection['top_sessions']}")
     if selection.get("mmr_lambda"):
@@ -1072,6 +1074,7 @@ def selection_from_args(args):
         replay_turn=args.replay_turn,
         time_focus=args.time_focus,
         session_cover=args.session_cover,
+        feedback=args.feedback,
         flat_output="flat-output" in (getattr(args, "ablate", None) or ()),
     )
 
@@ -1411,6 +1414,10 @@ def main():
     selection.add_argument("--session-cover", type=float, default=0.0, metavar="Z",
                            help="Count/list questions: first take the best sentence of every session that "
                                 "scores at least Z, then fill the budget by score; 0 = off.")
+    selection.add_argument("--feedback", type=int, default=0, metavar="K",
+                           help="Second scoring pass with the question plus the K best first-pass sentences "
+                                "as the query, max-pooled with the first (bridges multi-hop questions); "
+                                "costs one more scoring query per question; 0 = off.")
     selection.add_argument("--decompositions", default=None, metavar="PATH",
                            help="JSON {question_id: [sub-queries]} (from --stage decompose): score "
                                 "against each sub-query too, max-pooled.")
