@@ -151,8 +151,18 @@ evidence turns kept in the 4k context; free, from the compress logs):
 | LoCoMo | 91.7 | 95.5 | **95.5** | 95.9 |
 
 W = 0.25 keeps (slightly beats) CPC on LongMemEval and reaches Provence on LoCoMo — the best of
-both on this proxy. Answers for W = 0.25 next (Gemini budget). Sweep queued (runs 55–62):
-W = 0.1 / 0.15 / 0.35 at 4k, and W = 0.25 at LongMemEval 1k and LoCoMo 8k.
+both on this proxy. Answers for W = 0.25 next (Gemini budget).
+
+Sweep (runs 55–62, all exit 0), evidence turns kept, %:
+
+| W | 0 | 0.1 | 0.15 | 0.25 | 0.35 | 0.5 | Provence |
+|---|---|---|---|---|---|---|---|
+| LongMemEval 4k | 97.5 | **98.7** | 98.5 | 98.5 | 98.3 | 95.9 | 82.1 |
+| LoCoMo 4k | 91.7 | 94.3 | 94.8 | 95.5 | **96.0** | 95.9 | 95.5 |
+
+Broad plateau over 0.15–0.35; W = 0.25 chosen (not tuned on accuracy). It also helps at the
+other budgets: LongMemEval 1k 90.7 → **93.2**, LoCoMo 8k 96.8 → **98.1**. Cost: Provence
+(DeBERTa-v3, ~0.4B) runs beside CPC; latency still to measure.
 
 Server note: rebuilding `longmemeval-eval:latest` in place leaves the previous build as an
 untagged ("dangling") image; not deleted — your call (`docker image prune` removes them).

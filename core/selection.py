@@ -40,22 +40,44 @@ ASSISTANT_RECALL = re.compile(
 )
 
 
-def replay_turn_scores(units: Sequence[Unit], scores: Sequence[float]) -> List[float]:
-    """Provenance replay (after JustMem): lift every sentence of the turn that
-    holds the best-scoring assistant sentence above all other units, keeping
-    their relative order, so greedy selection takes that turn whole (or as much
-    of it as the budget allows) before anything else."""
-    assistant = [unit.id for unit in units if unit.role == "model"]
-    if not assistant:
+def replay_turn_scores(units: Sequence[Unit], scores: Sequence[float], turns: int = 2) -> List[float]:
+    """Provenance replay (after JustMem): lift every sentence of the best
+    `turns` assistant turns above all other units, keeping their relative order,
+    so greedy selection takes those turns whole (or as much as the budget allows)
+    before anything else; the best turn is lifted highest.
+
+    A turn is ranked by its best sentence or the best sentence of the user turn
+    right before it in the same session: the user's request ("list work-from-home
+    jobs for seniors") usually matches a recall question far better than any one
+    line of a long list."""
+    by_entry: Dict[int, List[int]] = {}
+    for unit in units:
+        by_entry.setdefault(unit.entry_index, []).append(unit.id)
+    order = sorted(by_entry)
+    ranked = []
+    for position, entry in enumerate(order):
+        members = by_entry[entry]
+        first = units[members[0]]
+        if first.role != "model":
+            continue
+        best = max(scores[index] for index in members)
+        if position > 0:
+            previous = by_entry[order[position - 1]]
+            if units[previous[0]].role == "user" and units[previous[0]].session == first.session:
+                best = max(best, max(scores[index] for index in previous))
+        ranked.append((best, entry))
+    if not ranked:
         return list(scores)
-    best = max(assistant, key=lambda index: (scores[index], index))
-    entry = units[best].entry_index
-    members = [unit.id for unit in units if unit.entry_index == entry]
-    top = max(scores)
-    low = min(scores[index] for index in members)
+    ranked.sort(reverse=True)
     lifted = list(scores)
-    for index in members:
-        lifted[index] = top + 1.0 + (scores[index] - low)
+    ceiling = max(scores) + 1.0
+    for rank, (_, entry) in enumerate(reversed(ranked[:turns])):
+        members = by_entry[entry]
+        low = min(scores[index] for index in members)
+        span = max(scores[index] for index in members) - low
+        for index in members:
+            lifted[index] = ceiling + (scores[index] - low)
+        ceiling += span + 1.0  # the next (better) turn goes above this one
     return lifted
 
 
