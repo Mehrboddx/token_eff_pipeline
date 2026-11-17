@@ -27,6 +27,8 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
 
 COPY eval/requirements.txt ./eval-requirements.txt
 RUN pip install --no-cache-dir -r eval-requirements.txt
+# spaCy's small English pipeline for --source ner entity keys (eval/entity_keys.py).
+RUN python -m spacy download en_core_web_sm
 
 # Only what eval/longmemeval.py actually imports -- not the rest of
 # replicate/ (run_long_bench.py, gemini_compressor.py, etc. are unrelated

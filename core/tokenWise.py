@@ -45,6 +45,7 @@ class TokenWise:
         self.model = model
         self.selection = selection or SelectionConfig()
         self.secondary = None  # optional second scorer fused in (SelectionConfig.provence_weight)
+        self.entities = None  # optional core.entities.EntityIndex (SelectionConfig.entity_weight)
         self._encoding = tiktoken.encoding_for_model("gpt-4")
         self._lexical = LexicalScorer()
         self._bm25 = BM25Scorer()
@@ -93,6 +94,10 @@ class TokenWise:
             expanded = "\n".join([query, *(units[index].text for index in top)])
             second = zscore(scorer.score_units(units, [expanded])[0])
             scores = [max(first, again) for first, again in zip(scores, second)]
+        if self.entities is not None and self.selection.entity_weight > 0:
+            weight = self.selection.entity_weight
+            keyed = zscore(self.entities.scores(units, query, scores))
+            scores = [(1 - weight) * a + weight * b for a, b in zip(scores, keyed)]
         if self.selection.time_focus > 0:
             scores = time_focus_scores(units, scores, query, self.selection.time_focus)
         if self.selection.session_cover > 0 and AGGREGATE.search(query):

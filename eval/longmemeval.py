@@ -589,6 +589,9 @@ def run_tag(stage, settings):
         parts.append(f"cover{selection['session_cover']:g}")
     if selection.get("feedback"):
         parts.append(f"fb{selection['feedback']}")
+    if selection.get("entity_weight"):
+        source = "-".join(Path(path).stem for path in settings.get("entity_keys") or [])
+        parts.append(f"ent{selection['entity_weight']:g}" + (f"-{source}" if source else ""))
     if selection.get("top_sessions"):
         parts.append(f"top{selection['top_sessions']}")
     if selection.get("mmr_lambda"):
@@ -1075,6 +1078,7 @@ def selection_from_args(args):
         time_focus=args.time_focus,
         session_cover=args.session_cover,
         feedback=args.feedback,
+        entity_weight=args.entity_weight,
         flat_output="flat-output" in (getattr(args, "ablate", None) or ()),
     )
 
@@ -1414,6 +1418,11 @@ def main():
     selection.add_argument("--session-cover", type=float, default=0.0, metavar="Z",
                            help="Count/list questions: first take the best sentence of every session that "
                                 "scores at least Z, then fill the budget by score; 0 = off.")
+    selection.add_argument("--entity-keys", nargs="+", default=None, metavar="JSON",
+                           help="Entity keys per unit from eval/entity_keys.py (ner or llm source).")
+    selection.add_argument("--entity-weight", type=float, default=0.0,
+                           help="Blend this weight of the entity-key score (question keys + bridge via the "
+                                "best sentences' noun phrases) into the z-scores; needs --entity-keys.")
     selection.add_argument("--feedback", type=int, default=0, metavar="K",
                            help="Second scoring pass with the question plus the K best first-pass sentences "
                                 "as the query, max-pooled with the first (bridges multi-hop questions); "
@@ -1520,6 +1529,7 @@ def main():
             "cpc_attention": args.cpc_attention,
             "token_budget": args.token_budget,
             "selection": asdict(selection_from_args(args)),
+            "entity_keys": args.entity_keys,
             "decompositions": args.decompositions,
             "provence": provence_settings(args),
             "paper_cpc": args.paper_cpc,
@@ -1548,6 +1558,11 @@ def main():
         cpc_attention=args.cpc_attention, dycp=dycp_settings(args),
         provence=provence_settings(args), cpc_ablate=tuple(args.ablate),
     )
+    if args.entity_weight > 0:
+        if not args.entity_keys:
+            raise SystemExit("--entity-weight needs --entity-keys")
+        from core.entities import load_index
+        tokenwise.entities = load_index(args.entity_keys)
     primary_name ="baseline_full_history" if args.compressor == "none" else f"compressed_{args.compressor}"
     configs = [(primary_name, tokenwise)]
     if args.compare_baseline and primary_name != "baseline_full_history":
@@ -1605,6 +1620,7 @@ def main():
             "dycp": dycp_settings(args),
             "provence": provence_settings(args),
             "score_cache": args.score_cache,
+            "entity_keys": args.entity_keys,
             "configs": [name for name, _ in configs],
         })
 
