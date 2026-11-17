@@ -269,6 +269,34 @@ self-escalation to full history (81.9, 9.7k tokens) — those two were not tempe
 compare loosely. Missing for attribution: fusion alone at temperature 0 (Gemini budget spent;
 first answer when budget allows).
 
+**GPU-only follow-ups (evidence recall, no Gemini; runs 0086–0097):**
+
+LoCoMo budget curve with NER 0.3 + fusion 0.25 (plain CPC: 4k 91.7, 8k 96.8):
+
+| budget | recall | all evidence kept | 41 cases |
+|---|---|---|---|
+| 2k | 93.0 | 93.1 | 29 |
+| 3k | 94.8 | 95.0 | 33 |
+| 4k | 95.9 | 96.1 | 35 |
+
+At 2k, NER + fusion keeps more evidence than plain CPC at 4k: half the tokens. Other LoCoMo
+4k: + date focus 2 on top of NER + fusion 95.9 (no change); NER 0.5 + fusion 95.8 / 34;
+feedback 1 / 2 (pseudo-relevance re-scoring) 91.5 / 91.4 — no help, drop it.
+
+LongMemEval (NER keys for 1.68M sentences in 71 min on CPU):
+
+| variant | 4k recall | 4k all kept | 1k recall | 1k all kept |
+|---|---|---|---|---|
+| CPC | 97.7 | 96.6 | 90.7 | 90.2 |
+| + NER 0.3 | 98.4 | 98.0 | 91.4 | 89.4 |
+| + fusion 0.25 | 98.5 | 97.8 | 93.2 | 92.4 |
+| + NER 0.3 + fusion 0.25 | **99.2** | **98.6** | **94.1** | **92.6** |
+
+Session cover 1.5 and feedback 1 on LongMemEval: no change (97.5 / 97.7). NER + fusion is the
+best on both benchmarks and both budgets. Next Gemini spend, in order: fusion alone on LoCoMo
+4k t0 (attribution), NER + fusion on LoCoMo 2k t0 (half-token claim), NER + fusion on
+LongMemEval 4k and 1k t0.
+
 Overall gains are small and not significant, because most flips are reader noise: on questions
 whose evidence status did not change, NER has 77 better / 76 worse. Splitting by evidence:
 
