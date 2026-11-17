@@ -16,12 +16,14 @@ class Agent:
         location="us-central1",
         tools=None,
         context_monitor=None,
+        temperature=None,
     ):
         self.name = name
         self.model = model
         self.system_prompt = system_prompt
         self.tools = tools or {}  # {name: Tool}
         self.context_monitor = context_monitor
+        self.temperature = temperature  # None: the model's default (1.0 for Gemini 2.5 Flash)
         # Explicit timeout: without one, a stalled request can hang the
         # process indefinitely instead of raising so callers can retry/log it.
         self.client = genai.Client(
@@ -87,6 +89,7 @@ class Agent:
             system_instruction=self.system_prompt,
             tools=tool_list,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+            temperature=self.temperature,
         )
 
     def call_model(self, history, context_meta=None):

@@ -257,7 +257,7 @@ def final_answer(text):
     return text[matches[-1].end():].strip().strip("*").strip() if matches else (text or "")
 
 
-def build_agent(project=PROJECT_ID, location=LOCATION, reader="plain", model=MODEL):
+def build_agent(project=PROJECT_ID, location=LOCATION, reader="plain", model=MODEL, temperature=None):
     # No tools: this eval is specifically about whether compression
     # preserves the fact needed to answer, not about tool-use behavior —
     # leaving calculator/exit_pipeline in just adds an unrelated variable.
@@ -265,6 +265,7 @@ def build_agent(project=PROJECT_ID, location=LOCATION, reader="plain", model=MOD
         name="longmemeval-agent",
         model=model,
         system_prompt=universal_agent_prompt + (READER_NOTES if reader == "notes" else ""),
+        temperature=temperature,
         project=project,
         location=location,
         tools=None,
@@ -943,11 +944,13 @@ def run_answer_stage(args, log_dir):
     if args.resume is None:
         suffix = ("" if args.reader == "plain" else f"_{args.reader}") \
             + ("" if args.answer_model == MODEL else f"_{args.answer_model}") \
+            + ("" if args.answer_temperature is None else f"_t{args.answer_temperature:g}") \
             + (f"_{args.answer_tag}" if args.answer_tag else "")
         run_number, log_path, existing_results = stage_output(log_dir, ANSWER_DIR, from_log_path, from_run_start,
                                                               suffix=suffix)
 
-    agent = build_agent(project=args.project, location=args.location, reader=args.reader, model=args.answer_model)
+    agent = build_agent(project=args.project, location=args.location, reader=args.reader, model=args.answer_model,
+                        temperature=args.answer_temperature)
     log_gcs_blob = _gcs_blob(args.log_gcs_uri, log_path.name) if args.log_gcs_uri else None
 
     # A failed Gemini call (quota, auth, network) is retried on the next run
@@ -1008,6 +1011,7 @@ def run_answer_stage(args, log_dir):
                 "evidence": crow.get("evidence"),
                 **({"reader": args.reader, "reply": reply} if args.reader != "plain" else {}),
                 "answer_model": args.answer_model,
+                "answer_temperature": args.answer_temperature,
                 "usage": usage or None,
             }
             results.setdefault(row["config"], []).append(row)
@@ -1336,6 +1340,11 @@ def main():
         help="--stage answer: the answering model (default the paper's). The judge stays on the default "
              "model either way. A non-default model adds its name to the answer log's suffix. Preview "
              "models need --location global.",
+    )
+    parser.add_argument(
+        "--answer-temperature", type=float, default=None,
+        help="--stage answer: sampling temperature for the answering model (default: the model's own, "
+             "1.0 for Gemini 2.5 Flash). Adds '_t<value>' to the answer log's suffix.",
     )
     parser.add_argument(
         "--answer-tag", default=None, metavar="TAG",
