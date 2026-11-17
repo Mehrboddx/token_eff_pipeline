@@ -44,6 +44,10 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 METHODS = {
     "ours-mistral": ({"compressor": "cpc", "cpc_preset": "mistral"}, {}, True),
     "ours-llama": ({"compressor": "cpc", "cpc_preset": "llama"}, {}, True),
+    # CPC + Provence score fusion (--fuse-provence 0.25): Provence re-scores the
+    # whole history on every call (no per-chunk cache), so incremental pays for it.
+    "ours-mistral-fuse": ({"compressor": "cpc", "cpc_preset": "mistral",
+                           "selection": SelectionConfig(provence_weight=0.25)}, {}, True),
     "paper-mistral": ({"compressor": "cpc", "cpc_preset": "mistral"}, {"paper": True}, False),
     "provence": ({"compressor": "provence", "provence": {}}, {}, False),
     "dycp": ({"compressor": "dycp", "dycp": {}}, {}, False),
@@ -168,7 +172,8 @@ def main():
         for method in args.methods:
             build_kwargs, settings_kwargs, incremental = METHODS[method]
             settings = CompressionSettings(token_budget=args.token_budget, **settings_kwargs)
-            tokenwise, load_seconds = timed(lambda: build_tokenwise(selection=SelectionConfig(), **build_kwargs))
+            build_kwargs = {"selection": SelectionConfig(), **build_kwargs}
+            tokenwise, load_seconds = timed(lambda: build_tokenwise(**build_kwargs))
             if torch:
                 torch.cuda.reset_peak_memory_stats()
             for item in items[:args.warmup]:
