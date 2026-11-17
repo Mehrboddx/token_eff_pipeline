@@ -216,6 +216,21 @@ the preference gap to a much stronger model. Caveat: written after reading 12 pr
 of the 3.6 Flash run (same 30 questions); the prompt is generic, but a held-out check (LoCoMo has no
 preference category) is not possible here. Make it the default reader for everything below.
 
+**Provenance replay, context check** (no model calls; share of the 56 assistant-recall questions
+whose reference words all appear in the context — crude, references are often paraphrased):
+
+| | plain | replay v1 (run 63/65) | replay v2 (run 66/68) |
+|---|---|---|---|
+| 4k | 39 / 56 (78.6% words) | 41 (84.2%) | **44 (88.6%)** |
+| 1k | 34 / 56 (74.1%) | 36 (79.3%) | **40 (85.7%)** |
+
+v1 (turn of the single best assistant sentence) often replayed the wrong turn: a generic list
+("transit apps" for "jobs for seniors"), or the general five-bottle list instead of its gin-specific
+follow-up. v2 ranks each assistant turn by its best sentence *or the user request just before it*,
+and replays the top two. v2 + fusion 0.25 (run 67): 44 (89.1%). All other 444 questions get
+exactly the same context as without replay. Both versions designed from these same failures —
+to disclose. Answering: next Gemini budget (temperature 0, memory reader).
+
 ## 2026-11-17 · Temperature-0 answers
 
 Run 1's 4k contexts answered twice at temperature 0 (tags a, b): **82.0 vs 82.6, 27 flips**
