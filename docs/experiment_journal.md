@@ -161,8 +161,19 @@ Sweep (runs 55–62, all exit 0), evidence turns kept, %:
 | LoCoMo 4k | 91.7 | 94.3 | 94.8 | 95.5 | **96.0** | 95.9 | 95.5 |
 
 Broad plateau over 0.15–0.35; W = 0.25 chosen (not tuned on accuracy). It also helps at the
-other budgets: LongMemEval 1k 90.7 → **93.2**, LoCoMo 8k 96.8 → **98.1**. Cost: Provence
-(DeBERTa-v3, ~0.4B) runs beside CPC; latency still to measure.
+other budgets: LongMemEval 1k 90.7 → **93.2**, LoCoMo 8k 96.8 → **98.1**.
+
+Latency (eval/latency.py, 50 questions per benchmark, RTX 4090, same questions for both):
+
+| | LME cold | LME incremental | LoCoMo cold | LoCoMo incremental | peak GPU |
+|---|---|---|---|---|---|
+| CPC | 23.2 s | 1.38 s | 5.0 s | 0.49 s | 14.6 GiB |
+| CPC + Provence | 28.8 s | **6.49 s** | 6.4 s | **1.79 s** | 19.5 GiB |
+
+Cold cost +24–28%; the per-call (incremental) cost is 4–5× higher, because Provence is a
+cross-encoder: it reads question and history together, so nothing carries over between calls,
+while CPC re-encodes only the sessions that changed. A real trade-off to state in the paper;
+a cheaper variant would run Provence only on CPC's top few hundred candidates.
 
 Server note: rebuilding `longmemeval-eval:latest` in place leaves the previous build as an
 untagged ("dangling") image; not deleted — your call (`docker image prune` removes them).

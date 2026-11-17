@@ -583,6 +583,10 @@ def run_tag(stage, settings):
         parts.append("pair")
     if selection.get("replay_turn"):
         parts.append("replay")
+    if selection.get("time_focus"):
+        parts.append(f"time{selection['time_focus']:g}")
+    if selection.get("session_cover"):
+        parts.append(f"cover{selection['session_cover']:g}")
     if selection.get("top_sessions"):
         parts.append(f"top{selection['top_sessions']}")
     if selection.get("mmr_lambda"):
@@ -1066,6 +1070,8 @@ def selection_from_args(args):
         window=args.window,
         pair_turns=args.pair_turns,
         replay_turn=args.replay_turn,
+        time_focus=args.time_focus,
+        session_cover=args.session_cover,
         flat_output="flat-output" in (getattr(args, "ablate", None) or ()),
     )
 
@@ -1399,6 +1405,12 @@ def main():
     selection.add_argument("--replay-turn", action="store_true",
                            help="Provenance replay: when the question asks what the assistant said "
                                 "earlier, keep the turn holding the best-scoring assistant sentence whole.")
+    selection.add_argument("--time-focus", type=float, default=0.0,
+                           help="Bonus (z units) for sessions inside the time window the question names "
+                                "('10 days ago', 'past two weeks', 'on 3 June, 2023'); 0 = off.")
+    selection.add_argument("--session-cover", type=float, default=0.0, metavar="Z",
+                           help="Count/list questions: first take the best sentence of every session that "
+                                "scores at least Z, then fill the budget by score; 0 = off.")
     selection.add_argument("--decompositions", default=None, metavar="PATH",
                            help="JSON {question_id: [sub-queries]} (from --stage decompose): score "
                                 "against each sub-query too, max-pooled.")

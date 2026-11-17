@@ -25,6 +25,8 @@ class SelectionConfig:
     window: int = 0  # also take +-N neighbouring sentences in the same turn
     pair_turns: bool = False  # also take the best sentence of the partner turn
     replay_turn: bool = False  # assistant-recall questions: keep the best assistant turn whole
+    time_focus: float = 0.0  # bonus (z units) for sessions inside the time window the question names
+    session_cover: float = 0.0  # count/list questions: first take each session's best unit with z >= this
     flat_output: bool = False  # ablation: plain joined sentences, no headers or labels to pay for
 
 
@@ -38,6 +40,53 @@ ASSISTANT_RECALL = re.compile(
     r"our (previous|earlier|last) (chat|conversation|discussion)|we (discussed|talked|chatted))\b",
     re.IGNORECASE,
 )
+
+
+# Questions whose answer gathers every instance across the history ("how many
+# times", "what are the names of", "what instruments does she play").
+AGGREGATE = re.compile(
+    r"\b(how many|how much|how often|in total|total|all the|what are|names of|list|"
+    r"what \w+s (do|does|did|has|have)|which \w+s)\b",
+    re.IGNORECASE,
+)
+
+
+def time_focus_scores(units: Sequence[Unit], scores: Sequence[float], question: str, bonus: float) -> List[float]:
+    """Add `bonus` to every unit whose session falls inside the time window
+    the question names (core.timefocus); unchanged when it names none."""
+    from core.timefocus import in_window, question_window, session_day
+
+    window = question_window(question)
+    if window is None:
+        return list(scores)
+    days = {}
+    boosted = list(scores)
+    for unit in units:
+        if unit.time not in days:
+            days[unit.time] = in_window(window, session_day(unit.time))
+        if days[unit.time]:
+            boosted[unit.id] += bonus
+    return boosted
+
+
+def session_cover_scores(units: Sequence[Unit], scores: Sequence[float], floor: float) -> List[float]:
+    """Lift each session's best unit, if it scores at least `floor`, above
+    every other unit (keeping their order), so a count or list question gets
+    one candidate mention from every session that has a plausible one before
+    the budget fills up with near-duplicates of the clearest mention."""
+    best: Dict = {}
+    for unit in units:
+        if unit.session is None or scores[unit.id] < floor:
+            continue
+        if unit.session not in best or scores[unit.id] > scores[best[unit.session]]:
+            best[unit.session] = unit.id
+    if not best:
+        return list(scores)
+    lift = max(scores) - floor + 1.0
+    lifted = list(scores)
+    for index in best.values():
+        lifted[index] += lift
+    return lifted
 
 
 def replay_turn_scores(units: Sequence[Unit], scores: Sequence[float], turns: int = 2) -> List[float]:

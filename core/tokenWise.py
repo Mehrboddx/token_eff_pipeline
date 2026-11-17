@@ -2,8 +2,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
 from core.scorers import BM25Scorer, LexicalScorer
-from core.selection import (ASSISTANT_RECALL, SelectionConfig, fuse_scores, mmr_pool_ids,
-                            replay_turn_scores, select_units)
+from core.selection import (AGGREGATE, ASSISTANT_RECALL, SelectionConfig, fuse_scores, mmr_pool_ids,
+                            replay_turn_scores, select_units, session_cover_scores, time_focus_scores)
 from core.units import Unit, render_flat, render_units
 
 
@@ -82,6 +82,10 @@ class TokenWise:
                      if self.secondary is not None and self.selection.provence_weight > 0 else None)
 
         scores = fuse_scores(primary, self.selection, lexical, secondary)
+        if self.selection.time_focus > 0:
+            scores = time_focus_scores(units, scores, query, self.selection.time_focus)
+        if self.selection.session_cover > 0 and AGGREGATE.search(query):
+            scores = session_cover_scores(units, scores, self.selection.session_cover)
         if self.selection.replay_turn and ASSISTANT_RECALL.search(query):
             scores = replay_turn_scores(units, scores)
         embeddings = None
