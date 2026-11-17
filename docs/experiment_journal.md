@@ -34,6 +34,19 @@ best mix (+1.4, p < 0.001). New ladder with 2k / 8k: answering in progress.
 Side result: the paper-faithful CPC's 93 s per question is 71 s of `pysbd` sentence splitting
 over the whole transcript; GPU encoding is 24 s vs our 21.5 s. Paper text updated.
 
+## 2026-11-17 · Adaptive budget: LoCoMo with the full ladder
+
+LoCoMo fixed budgets (judge): 2k 73.5 · 4k 78.6 · **8k 80.9** · full 81.6 (29k tokens).
+**CPC-Mem at 8k is level with full history** (93 better / 103 worse, n.s.) with 28% of its tokens.
+
+With the 8k rung in place, neither gate beats mixing fixed budgets any more: learned gate at
+θ 0.95 = 81.2 at 18.1k tokens, exactly the mix; θ 0.85 = 77.2 at 4.0k (−1.3 vs the mix, p 0.11).
+The earlier +1.4 on the 4k/full ladder came from the 4k→full gap that a fixed 8k now fills.
+
+**Conclusion for the paper:** gates built on CPC's score profile do not beat fixed budgets on
+either benchmark (honest negative result). What carries is the budget curve: CPC-Mem matches
+full history at **1k on LongMemEval** and at **8k on LoCoMo**.
+
 ## 2026-11-17 · Chain-of-Note reader
 
 Idea (LongMemEval paper, Wu et al. 2025: up to +10 points): the answering model first lists
@@ -44,7 +57,13 @@ Code: `--stage answer --reader notes` (branch `exp/adaptive-gate-and-notes`).
 **LongMemEval: 83.8 vs 83.0** (25 better / 21 worse, McNemar p 0.66) — no real gain.
 Multi-session 79.7 → 83.5, knowledge-update 87.2 → 89.7, but single-session-assistant
 83.9 → 78.6. Gemini 2.5 Flash already thinks before answering, which likely covers most of what
-explicit notes add. LoCoMo: running.
+explicit notes add.
+
+**LoCoMo, first 559 questions** (the run was interrupted there): **80.0 vs 78.5** (39 / 31,
+p 0.40). Same pattern as LongMemEval: it helps the reasoning-heavy categories — multi-hop
+55.0 → 63.1, temporal 79.2 → 86.2 — and slightly hurts simple lookups (single-hop 87.4 → 85.0).
+A per-question-type reader (notes only for multi-hop/temporal/multi-session questions) is the
+natural follow-up. Remaining ~1,000 LoCoMo questions: tomorrow's budget.
 
 ## 2026-11-17 · Answer noise: the same run twice ⚠
 
@@ -71,6 +90,19 @@ but escalation barely pays: a question that is MISSING at 0.5k is usually MISSIN
 too. Best policy: 4k, and only MISSING questions (15%) go to full history → **84.2 at 19.7k
 mean tokens** (+1.2 over 4k, vs best mix p 0.21, n.s.).
 
+**LoCoMo: escalation works.** FOUND answers 79–84% correct, MISSING 24–35%. Policies, cost =
+tokens of every budget tried, compared with the best mix of fixed budgets:
+- **8k → full: 81.9 at 9.7k tokens** — level with full history (81.6 at 29.0k) for a third of its
+  tokens; +1.0 vs the mix (bootstrap p < 0.001). Only 6% of questions escalate.
+- **4k → full: 80.7 at 5.7k tokens** — fixed 8k's accuracy (80.9) at 70% of its tokens; +1.1 vs
+  the mix (p 0.015).
+- from 2k: no better than the mix.
+
+Caveats: the classifier is an extra Gemini call; in a deployed agent the answering model would
+flag missing memory itself (next test: an answer prompt that may reply NOT FOUND). Bootstrap
+holds the mix weight fixed. Answer noise (±3/run) affects absolute numbers, but every policy
+here is evaluated on the same answer runs.
+
 The underlying finding matters more: at 4k, 97.5% of LongMemEval questions have their evidence
 in the context, yet accuracy is 83%. **The reader is the bottleneck, not the memory.**
 
@@ -82,6 +114,13 @@ context costs about $0.02 per question (measured tokens: ~7k prompt incl. system
 LongMemEval 4k contexts: `gemini-3.6-flash` and `gemini-3.1-pro-preview` (judge unchanged:
 Gemini 2.5 Flash, temperature 0). `--answer-model`; answer rows now log token usage.
 
+**Gemini 3.6 Flash on the same 4k contexts: 87.2 vs 83.0** (38 better / 17 worse, McNemar
+p 0.006) — the first change clearly outside the ±3 answer noise. Per type: multi-session
+79.7 → 87.2, single-session-user 88.6 → 94.3, temporal 87.2 → 91.0, preference 53.3 → 60.0;
+only single-session-assistant drops (83.9 → 80.4). Measured per question: 6.4k prompt tokens,
+0.73k thinking, 0.11k output. Gemini 2.5 Flash on the full history reaches 80.0 with 107k
+prompt tokens per question; CPC-Mem at 4k + a stronger reader is +7 points with 6% of the tokens.
+
 ## 2026-11-17 · CPC + Provence score fusion (GPU, running)
 
 Idea: the two scorers are complementary — CPC wins on LongMemEval (83.0 vs 79.4), Provence on
@@ -89,6 +128,18 @@ LoCoMo (81.3 vs 78.6); Provence keeps answer-like assistant text, CPC the user's
 Blend their per-query z-scores: `--fuse-provence W` (Provence scores cached like CPC's).
 Smoke test on 5 questions: peak GPU memory 7.2 GB (CPC from cache, only Provence loaded).
 Queued on the server, GPU 1: W = 0.5 and 0.25, both benchmarks.
+
+Done (runs 51–54, all exit 0). Before spending on answers, evidence recall (share of gold
+evidence turns kept in the 4k context; free, from the compress logs):
+
+| | CPC | Provence | fuse 0.25 | fuse 0.5 |
+|---|---|---|---|---|
+| LongMemEval | 97.5 | 82.1 | **98.5** | 95.9 |
+| LoCoMo | 91.7 | 95.5 | **95.5** | 95.9 |
+
+W = 0.25 keeps (slightly beats) CPC on LongMemEval and reaches Provence on LoCoMo — the best of
+both on this proxy. Answers for W = 0.25 next (Gemini budget). Sweep queued (runs 55–62):
+W = 0.1 / 0.15 / 0.35 at 4k, and W = 0.25 at LongMemEval 1k and LoCoMo 8k.
 
 Server note: rebuilding `longmemeval-eval:latest` in place leaves the previous build as an
 untagged ("dangling") image; not deleted — your call (`docker image prune` removes them).

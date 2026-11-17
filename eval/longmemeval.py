@@ -248,6 +248,16 @@ When the conversation includes "Relevant earlier context", read it in two steps 
 1. Notes: list every piece of the earlier context that bears on the question, each with the date of its session. Resolve relative times ("yesterday", "last week", "two months ago") against that session date.
 2. Reasoning: work from the notes to the answer. If a fact changed over time, the most recent session wins; for counts and totals, check the notes for every instance.
 Write the notes and reasoning first. End your reply with one final line that starts with "Answer:" followed by the answer alone."""
+# --reader memory: tells the reader what the "Relevant earlier context" block is.
+# Failure analysis of single-session-preference questions: the evidence was in
+# the context, but the reader gave generic advice instead of building on it.
+READER_MEMORY = """
+
+When the conversation includes "Relevant earlier context", it is an excerpt of your own earlier conversations with this same user, retrieved from memory for this question; " … " marks sentences left out. Use it as what you know about the user:
+- For recommendations, suggestions or advice, tailor them to what the earlier context shows about the user (their equipment, past experiences, plans, likes and dislikes) and build on it explicitly, rather than giving generic advice.
+- For questions about what you said earlier, answer from the Assistant lines of the earlier context.
+- If something changed over time, the most recent session wins."""
+READERS = {"plain": "", "notes": READER_NOTES, "memory": READER_MEMORY}
 ANSWER_MARKER = re.compile(r"^\s*\**\s*answer\s*\**\s*:\s*\**", re.IGNORECASE | re.MULTILINE)
 
 
@@ -264,7 +274,7 @@ def build_agent(project=PROJECT_ID, location=LOCATION, reader="plain", model=MOD
     return Agent(
         name="longmemeval-agent",
         model=model,
-        system_prompt=universal_agent_prompt + (READER_NOTES if reader == "notes" else ""),
+        system_prompt=universal_agent_prompt + READERS[reader],
         temperature=temperature,
         project=project,
         location=location,
@@ -571,6 +581,8 @@ def run_tag(stage, settings):
         parts.append(f"w{selection['window']}")
     if selection.get("pair_turns"):
         parts.append("pair")
+    if selection.get("replay_turn"):
+        parts.append("replay")
     if selection.get("top_sessions"):
         parts.append(f"top{selection['top_sessions']}")
     if selection.get("mmr_lambda"):
@@ -993,7 +1005,7 @@ def run_answer_stage(args, log_dir):
                 reply = f"[ERROR: {exc}]"
             # With --reader notes the reply is notes + reasoning + "Answer: ...";
             # only the final answer is graded and judged.
-            predicted = reply if args.reader == "plain" or reply.startswith("[ERROR") else final_answer(reply)
+            predicted = reply if args.reader != "notes" or reply.startswith("[ERROR") else final_answer(reply)
 
             correct = grade(predicted, crow["reference"])
             compressed_context = _compressed_context_from_described(crow.get("history"), crow.get("compression_mode"))
@@ -1053,6 +1065,7 @@ def selection_from_args(args):
         top_sessions=args.top_sessions,
         window=args.window,
         pair_turns=args.pair_turns,
+        replay_turn=args.replay_turn,
         flat_output="flat-output" in (getattr(args, "ablate", None) or ()),
     )
 
@@ -1330,10 +1343,11 @@ def main():
              "logs from before selections were recorded; no model calls.",
     )
     parser.add_argument(
-        "--reader", choices=["plain", "notes"], default="plain",
+        "--reader", choices=["plain", "notes", "memory"], default="plain",
         help="--stage answer: 'notes' asks the model to list the relevant context with session dates, "
              "reason, then give a final 'Answer:' line (Chain-of-Note reading, after LongMemEval); only "
-             "that line is graded. Logged next to the plain answers with a '_notes' suffix.",
+             "that line is graded. 'memory' explains that the earlier context is the agent's memory of this "
+             "user and asks it to build advice on it. Logged with a '_notes' / '_memory' suffix.",
     )
     parser.add_argument(
         "--answer-model", default=MODEL,
@@ -1382,6 +1396,9 @@ def main():
                            help="Also include +-N neighbouring sentences of the same turn.")
     selection.add_argument("--pair-turns", action="store_true",
                            help="Also include the best sentence of the partner turn (reply/prompt).")
+    selection.add_argument("--replay-turn", action="store_true",
+                           help="Provenance replay: when the question asks what the assistant said "
+                                "earlier, keep the turn holding the best-scoring assistant sentence whole.")
     selection.add_argument("--decompositions", default=None, metavar="PATH",
                            help="JSON {question_id: [sub-queries]} (from --stage decompose): score "
                                 "against each sub-query too, max-pooled.")

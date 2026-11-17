@@ -2,7 +2,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
 from core.scorers import BM25Scorer, LexicalScorer
-from core.selection import SelectionConfig, fuse_scores, mmr_pool_ids, select_units
+from core.selection import (ASSISTANT_RECALL, SelectionConfig, fuse_scores, mmr_pool_ids,
+                            replay_turn_scores, select_units)
 from core.units import Unit, render_flat, render_units
 
 
@@ -81,6 +82,8 @@ class TokenWise:
                      if self.secondary is not None and self.selection.provence_weight > 0 else None)
 
         scores = fuse_scores(primary, self.selection, lexical, secondary)
+        if self.selection.replay_turn and ASSISTANT_RECALL.search(query):
+            scores = replay_turn_scores(units, scores)
         embeddings = None
         if self.selection.mmr_lambda > 0 and self.selection.mmr_similarity == "semantic":
             if not hasattr(scorer, "unit_embeddings"):

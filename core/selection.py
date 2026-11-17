@@ -24,7 +24,39 @@ class SelectionConfig:
     top_sessions: int = 0  # two-level: restrict to the best K sessions
     window: int = 0  # also take +-N neighbouring sentences in the same turn
     pair_turns: bool = False  # also take the best sentence of the partner turn
+    replay_turn: bool = False  # assistant-recall questions: keep the best assistant turn whole
     flat_output: bool = False  # ablation: plain joined sentences, no headers or labels to pay for
+
+
+# Questions that ask the agent to recall its own earlier output ("remind me what
+# you recommended", "in our previous chat ..."). Such answers usually sit inside
+# one long assistant turn (a list, a table, a plan), where sentence-level
+# selection keeps only fragments.
+ASSISTANT_RECALL = re.compile(
+    r"\b(you (said|told|suggested|recommended|mentioned|gave|provided|listed|shared|described|"
+    r"explained|wrote|came up with|named)|your (suggestion|recommendation|answer|list)|remind me|"
+    r"our (previous|earlier|last) (chat|conversation|discussion)|we (discussed|talked|chatted))\b",
+    re.IGNORECASE,
+)
+
+
+def replay_turn_scores(units: Sequence[Unit], scores: Sequence[float]) -> List[float]:
+    """Provenance replay (after JustMem): lift every sentence of the turn that
+    holds the best-scoring assistant sentence above all other units, keeping
+    their relative order, so greedy selection takes that turn whole (or as much
+    of it as the budget allows) before anything else."""
+    assistant = [unit.id for unit in units if unit.role == "model"]
+    if not assistant:
+        return list(scores)
+    best = max(assistant, key=lambda index: (scores[index], index))
+    entry = units[best].entry_index
+    members = [unit.id for unit in units if unit.entry_index == entry]
+    top = max(scores)
+    low = min(scores[index] for index in members)
+    lifted = list(scores)
+    for index in members:
+        lifted[index] = top + 1.0 + (scores[index] - low)
+    return lifted
 
 
 def zscore(values: Sequence[float]) -> List[float]:
