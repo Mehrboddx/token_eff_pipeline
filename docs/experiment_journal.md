@@ -269,6 +269,31 @@ self-escalation to full history (81.9, 9.7k tokens) — those two were not tempe
 compare loosely. Missing for attribution: fusion alone at temperature 0 (Gemini budget spent;
 first answer when budget allows).
 
+**Attribution and budget runs (2026-11-18, Gemini 2.5 Flash, temperature 0):**
+
+| run | accuracy | vs | flips | McNemar p |
+|---|---|---|---|---|
+| LoCoMo 4k, fusion 0.25 alone (0054) | 82.1 | CPC 4k 78.5 | 116 / 61 | < 0.001 |
+| LoCoMo 4k, NER + fusion (0085) | 82.1 | fusion alone 82.1 | 72 / 71 | 1.0 |
+| LoCoMo **2k**, NER + fusion (0087) | 81.2 | CPC **4k** 78.5 | 123 / 81 | 0.004 |
+| LoCoMo 2k vs 4k, NER + fusion | 81.2 vs 82.1 | | 64 / 78 | 0.28 |
+| LongMemEval 4k, NER + fusion (0095) | 82.8 | CPC 4k 82.0 / 82.6 | 34 / 30, 36 / 35 | 0.71 / 1.0 |
+| LongMemEval 1k, CPC (0048 t0) | 80.8 | | | |
+| LongMemEval **1k**, NER + fusion (0096) | 83.8 | CPC 1k 80.8 | 46 / 31 | 0.11 |
+
+**The LoCoMo gain is fusion's.** Fusion alone gives the whole +3.6; NER on top adds nothing in
+accuracy (it adds evidence: 95.5 → 95.9 recall, 30 → 35 of the 41 cases, but those don't turn
+into net answers once fusion is in). NER without fusion: +1.2 (n.s.), real only on the
+evidence-changed questions. NER + fusion at 2k beats plain CPC at 4k (half the tokens,
+p = 0.004); fusion alone at 2k not run, so the 2k claim is also likely fusion's. LongMemEval:
+NER + fusion at 1k (83.8) is above plain CPC at 4k (82.0 / 82.6) with a quarter of the tokens;
+big gains on assistant-recall (76.8 → 94.6) and temporal (82.0 → 87.2), losses on preference
+(56.7 → 46.7, n = 30) and knowledge-update (91.0 → 87.2). Fusion alone at LongMemEval 1k
+(run 0061) not answered at t0 yet.
+
+Fixed: the judge stage now re-judges rows whose judge call failed ([ERROR] verdict); before,
+a dropped connection left those questions unscored for good (32 and 35 rows here).
+
 **GPU-only follow-ups (evidence recall, no Gemini; runs 0086–0097):**
 
 LoCoMo budget curve with NER 0.3 + fusion 0.25 (plain CPC: 4k 91.7, 8k 96.8):

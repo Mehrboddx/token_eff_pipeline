@@ -845,12 +845,14 @@ def run_judge_stage(args, log_dir):
     log_gcs_blob = _gcs_blob(args.log_gcs_uri, log_path.name) if args.log_gcs_uri else None
 
     # Re-judge questions whose judged answer was a failed call that has
-    # since been retried in the source log.
+    # since been retried in the source log, and questions whose judge call
+    # itself failed (network, quota); the new row supersedes the old one.
     retried = {(row["config"], row["question_id"]) for row in answered_rows
                if not str(row.get("predicted", "")).startswith("[ERROR")}
     existing_results = [row for row in existing_results
                         if not (str(row.get("predicted", "")).startswith("[ERROR")
-                                and (row["config"], row["question_id"]) in retried)]
+                                and (row["config"], row["question_id"]) in retried)
+                        and not str(row.get("llm_judge_verdict", "")).startswith("[ERROR")]
     already_done = {(row["config"], row["question_id"]) for row in existing_results}
     results = {}
     for row in existing_results:
