@@ -297,6 +297,7 @@ big gains on assistant-recall (76.8 → 94.6) and temporal (82.0 → 87.2), loss
 |---|---|---|---|---|
 | LongMemEval **1k**, fusion alone (0061 t0) | **85.0** | CPC 1k 80.8 | 47 / 26 | 0.019 |
 | LongMemEval 1k, NER + fusion | 83.8 | fusion alone 85.0 | 23 / 29 | 0.49 |
+| LongMemEval 4k, fusion alone (0053 t0) | 84.2 | CPC 4k 82.0 / 82.6 | 38 / 27, 33 / 25 | 0.22 / 0.36 |
 | LoCoMo 2k, fusion alone (0098) | running | CPC 4k 78.5 | | |
 
 LongMemEval 1k fusion alone per category: assistant-recall 76.8 → 96.4, multi-session 74.4 →
