@@ -419,6 +419,12 @@ and replays the top two. v2 + fusion 0.25 (run 67): 44 (89.1%). All other 444 qu
 exactly the same context as without replay. Both versions designed from these same failures —
 to disclose. Answering: next Gemini budget (temperature 0, memory reader).
 
+**Dropped (2026-11-18).** Replay is a rule for one question type, triggered by a cue regex written
+after reading these failures; it fires on 54/500 LongMemEval questions and 0 LoCoMo questions.
+Design rule from here on: selection changes must apply the same way to every question, with no
+question-type triggers. Fusion, which is such a change, already lifts assistant-recall from 82.1 to 96.4
+(4k) and from 76.8 to 96.4 (1k), so replay is not needed.
+
 ## 2026-11-17 · Temperature-0 answers
 
 Run 1's 4k contexts answered twice at temperature 0 (tags a, b): **82.0 vs 82.6, 27 flips**
