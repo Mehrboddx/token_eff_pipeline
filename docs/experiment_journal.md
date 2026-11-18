@@ -291,6 +291,20 @@ big gains on assistant-recall (76.8 → 94.6) and temporal (82.0 → 87.2), loss
 (56.7 → 46.7, n = 30) and knowledge-update (91.0 → 87.2). Fusion alone at LongMemEval 1k
 (run 0061) not answered at t0 yet.
 
+**Fusion alone at small budgets (2026-11-18):**
+
+| run | accuracy | vs | flips | McNemar p |
+|---|---|---|---|---|
+| LongMemEval **1k**, fusion alone (0061 t0) | **85.0** | CPC 1k 80.8 | 47 / 26 | 0.019 |
+| LongMemEval 1k, NER + fusion | 83.8 | fusion alone 85.0 | 23 / 29 | 0.49 |
+| LoCoMo 2k, fusion alone (0098) | running | CPC 4k 78.5 | | |
+
+LongMemEval 1k fusion alone per category: assistant-recall 76.8 → 96.4, multi-session 74.4 →
+82.0, temporal 82.0 → 84.2, knowledge-update 91.0 → 92.3, preference 56.7 → 53.3, user 92.9 →
+88.6. Fusion at 1k (85.0) is above CPC at 4k (82.0 / 82.6) with a quarter of the tokens. NER
+does not help on top of fusion on either benchmark. LoCoMo 2k evidence recall: fusion alone
+91.9 (28 of the 41 cases), NER + fusion 93.0 (29), CPC 4k 91.7.
+
 Fixed: the judge stage now re-judges rows whose judge call failed ([ERROR] verdict); before,
 a dropped connection left those questions unscored for good (32 and 35 rows here).
 
