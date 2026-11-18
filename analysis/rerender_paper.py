@@ -20,8 +20,8 @@ The output is an ordinary compress-stage log, so it is answered and judged
 like any other run. It needs no GPU and no Vertex AI credentials.
 
 Usage:
-    python -m eval.rerender_paper --from-log logs/eval_longmemeval_run0031_compress_cpc-mistral_b4000_paper.jsonl --run 47
-    python -m eval.rerender_paper --from-log logs/eval_longmemeval_run0032_compress_locomo_cpc-mistral_b4000_paper.jsonl --run 48
+    python -m analysis.rerender_paper --from-log logs/eval_longmemeval_run0031_compress_cpc-mistral_b4000_paper.jsonl --run 47
+    python -m analysis.rerender_paper --from-log logs/eval_longmemeval_run0032_compress_locomo_cpc-mistral_b4000_paper.jsonl --run 48
 
 then, as for any compress log:
     python -m eval.longmemeval --stage answer --from-log logs/<new log> --project <project>
@@ -73,14 +73,19 @@ def transcript_lines(memory, turn_dates=False):
         label = meta.get("speaker") or ROLE_LABELS.get(entry["role"], entry["role"])
         date = f"[{meta['time']}] " if turn_dates and meta.get("time") else ""
         prefix = f"{date}{label}: "
-        lines.append([prefix + entry["text"], {
-            "entry_index": entry["entry_index"],
-            "role": entry["role"],
-            "session": meta.get("session"),
-            "time": meta.get("time"),
-            "meta": meta,
-            "prefix_len": len(prefix),
-        }])
+        lines.append(
+            [
+                prefix + entry["text"],
+                {
+                    "entry_index": entry["entry_index"],
+                    "role": entry["role"],
+                    "session": meta.get("session"),
+                    "time": meta.get("time"),
+                    "meta": meta,
+                    "prefix_len": len(prefix),
+                },
+            ]
+        )
 
     text = "\n".join(line for line, _ in lines)
     assert text == paper_transcript(memory, turn_dates), "transcript rebuild differs from paper_transcript"
@@ -147,7 +152,7 @@ def kept_units(sentences, kept, lines):
             lo, hi = max(start, line_start), min(end, line_start + len(line))
             if info is not None:
                 lo = max(lo, line_start + info["prefix_len"])
-            piece = line[lo - line_start:hi - line_start].strip()
+            piece = line[lo - line_start : hi - line_start].strip()
             if piece and info is not None:
                 pieces.append((sent_index, li, piece))
             li += 1
@@ -158,13 +163,22 @@ def kept_units(sentences, kept, lines):
         if sent_index not in keep:
             continue
         info = lines[li][2]
-        units.append(Unit(id=position, text=piece, role=info["role"], entry_index=info["entry_index"],
-                          session=info["session"], time=info["time"], meta=info["meta"]))
+        units.append(
+            Unit(
+                id=position,
+                text=piece,
+                role=info["role"],
+                entry_index=info["entry_index"],
+                session=info["session"],
+                time=info["time"],
+                meta=info["meta"],
+            )
+        )
     return units
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("--from-log", required=True, help="a --paper-cpc compress-stage log")
     parser.add_argument("--run", type=int, required=True, help="run number for the new log")
     parser.add_argument("--log-dir", default="logs")
@@ -173,27 +187,35 @@ def main():
     args = parser.parse_args()
 
     run_start, rows = load_run_log(Path(args.from_log))
-    if not run_start.get("paper_cpc"):
+    if run_start is None or not run_start.get("paper_cpc"):
         raise SystemExit(f"{args.from_log} is not a --paper-cpc run")
     turn_dates = run_start.get("paper_dates") == "turn"
     rows = list({(row["config"], row["question_id"]): row for row in rows}.values())
     if args.limit is not None:
         if not args.dry_run:
             raise SystemExit("--limit is for checks only; use it with --dry-run")
-        rows = rows[:args.limit]
+        rows = rows[: args.limit]
 
     dataset = dataset_from_label(run_start.get("dataset"))
     limit = run_start.get("limit")
-    items = load_items(dataset, limit=int(limit) if limit not in (None, "None") else None,
-                       seed=int(run_start.get("seed", 42)), question_types=run_start.get("question_types"))
+    items = load_items(
+        dataset,
+        limit=int(limit) if limit not in (None, "None") else None,
+        seed=int(run_start.get("seed", 42)),
+        question_types=run_start.get("question_types"),
+    )
     items = {item["question_id"]: item for item in items}
 
     segmenter = pysbd.Segmenter(language="en", clean=False, char_span=True)
     encoding = tiktoken.encoding_for_model("gpt-4")
-    count_tokens = lambda text: len(encoding.encode(text, disallowed_special=()))
+
+    def count_tokens(text):
+        return len(encoding.encode(text, disallowed_special=()))
 
     source = Path(args.from_log).name
     match = re.match(r"eval_longmemeval_run\d+_(.*)\.jsonl$", source)
+    if match is None:
+        raise SystemExit(f"{source} is not a run log name")
     log_path = Path(args.log_dir) / f"eval_longmemeval_run{args.run:04d}_{match.group(1)}-rerender.jsonl"
     if log_path.exists():
         raise SystemExit(f"{log_path} already exists")
@@ -203,7 +225,7 @@ def main():
     for row in rows:
         context = row["history"][0]
         assert context.get("kind") == "compressed_context" and context["text"].startswith(PREFIX)
-        joined = context["text"][len(PREFIX):]
+        joined = context["text"][len(PREFIX) :]
 
         memory = seed_memory_from_haystack(items[row["question_id"]])
         transcript, lines = transcript_lines(memory, turn_dates)
@@ -234,12 +256,20 @@ def main():
         print(out_rows[0]["history"][0]["text"][:3000])
     else:
         with log_path.open("w", encoding="utf-8") as log_file:
+
             def log(record):
                 record = {key: value for key, value in record.items() if key != "timestamp"}
                 log_file.write(json.dumps({"timestamp": datetime.now().isoformat(), **record}) + "\n")
 
-            log(dict(run_start, run=args.run, rerender_of=run_start.get("run"),
-                     rerender_from_log=str(args.from_log), paper_render="dated"))
+            log(
+                dict(
+                    run_start,
+                    run=args.run,
+                    rerender_of=run_start.get("run"),
+                    rerender_from_log=str(args.from_log),
+                    paper_render="dated",
+                )
+            )
             for row in out_rows:
                 log(row)
 

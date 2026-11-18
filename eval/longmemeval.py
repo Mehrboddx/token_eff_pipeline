@@ -21,42 +21,40 @@ import json
 import os
 import random
 import re
-import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-
-# Windows' console/redirect default codepage (cp1252) can't encode plenty of
-# characters that show up in ordinary Gemini answers (curly quotes, em dashes,
-# accented names) -- without this, a print() partway through a long run raises
-# UnicodeEncodeError and kills the process even though the result was already
-# written to the JSONL log.
-if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from dotenv import load_dotenv
 from google.genai import types
 from huggingface_hub import hf_hub_download
 
 from core.agent import Agent
-from core.cpcCompressor import BASE_MODELS as CPC_BASE_MODELS
-from core.cpcCompressor import CPCCompressor, cpc_cache_key
+from core.console import utf8_console
+from core.cpc_compressor import BASE_MODELS as CPC_BASE_MODELS
+from core.cpc_compressor import CPCCompressor, cpc_cache_key
 from core.dycp import DEFAULT_RETRIEVER as DYCP_DEFAULT_RETRIEVER
 from core.dycp import DyCPCompressor
+from core.gemini_compressor import GeminiCompressor
+from core.memory import Memory
+from core.prompts import universal_agent_prompt
 from core.provence import DEFAULT_MODEL as PROVENCE_DEFAULT_MODEL
 from core.provence import ProvenceCompressor, ProvenceSelector
-from core.geminiCompressor import GeminiCompressor
-from core.memory import Memory
 from core.runner import Runner
 from core.selection import SelectionConfig
-from core.tokenWise import TokenWise
+from core.token_wise import TokenWise
 from core.units import ROLE_LABELS
 from eval.evidence import exact_evidence_recall, summarize_recall, text_matched_evidence_recall
 from eval.locomo import CATEGORIES as LOCOMO_CATEGORIES
 from eval.locomo import LOCOMO_COMMIT, load_locomo
 from eval.score_cache import CachedScorer
-from prompts.prompt import universal_agent_prompt
+
+# Windows' console/redirect default codepage (cp1252) can't encode plenty of
+# characters that show up in ordinary Gemini answers (curly quotes, em dashes,
+# accented names) -- without this, a print() partway through a long run raises
+# UnicodeEncodeError and kills the process even though the result was already
+# written to the JSONL log.
+utf8_console()
 
 load_dotenv()
 
@@ -240,23 +238,61 @@ def grade(predicted, reference):
     return missing <= tolerance
 
 
-def build_agent(project=PROJECT_ID, location=LOCATION):
+# --reader notes: Chain-of-Note style reading (LongMemEval, Wu et al. 2025,
+# found up to +10 points from "extract the relevant notes, then reason").
+READER_NOTES = """
+
+When the conversation includes "Relevant earlier context", read it in two steps before you answer:
+1. Notes: list every piece of the earlier context that bears on the question, each with the date of its session. Resolve relative times ("yesterday", "last week", "two months ago") against that session date.
+2. Reasoning: work from the notes to the answer. If a fact changed over time, the most recent session wins; for counts and totals, check the notes for every instance.
+Write the notes and reasoning first. End your reply with one final line that starts with "Answer:" followed by the answer alone."""
+# --reader memory: tells the reader what the "Relevant earlier context" block is.
+# Failure analysis of single-session-preference questions: the evidence was in
+# the context, but the reader gave generic advice instead of building on it.
+READER_MEMORY = """
+
+When the conversation includes "Relevant earlier context", it is an excerpt of your own earlier conversations with this same user, retrieved from memory for this question; " … " marks sentences left out. Use it as what you know about the user:
+- For recommendations, suggestions or advice, tailor them to what the earlier context shows about the user (their equipment, past experiences, plans, likes and dislikes) and build on it explicitly, rather than giving generic advice.
+- For questions about what you said earlier, answer from the Assistant lines of the earlier context.
+- If something changed over time, the most recent session wins."""
+READERS = {"plain": "", "notes": READER_NOTES, "memory": READER_MEMORY}
+ANSWER_MARKER = re.compile(r"^\s*\**\s*answer\s*\**\s*:\s*\**", re.IGNORECASE | re.MULTILINE)
+
+
+def final_answer(text):
+    """The text after the last 'Answer:' line of a --reader notes reply (whole reply if none)."""
+    matches = list(ANSWER_MARKER.finditer(text or ""))
+    return text[matches[-1].end() :].strip().strip("*").strip() if matches else (text or "")
+
+
+def build_agent(project=PROJECT_ID, location=LOCATION, reader="plain", model=MODEL, temperature=None):
     # No tools: this eval is specifically about whether compression
     # preserves the fact needed to answer, not about tool-use behavior —
     # leaving calculator/exit_pipeline in just adds an unrelated variable.
     return Agent(
         name="longmemeval-agent",
-        model=MODEL,
-        system_prompt=universal_agent_prompt,
+        model=model,
+        system_prompt=universal_agent_prompt + READERS[reader],
+        temperature=temperature,
         project=project,
         location=location,
         tools=None,
     )
 
 
-def build_tokenwise(compressor: str, cpc_max_seq_length: int = 6144, cpc_preset: str = "llama",
-                     project=PROJECT_ID, location=LOCATION, selection=None, score_cache=None,
-                     cpc_attention="bidirectional", dycp=None, provence=None, cpc_ablate=()):
+def build_tokenwise(
+    compressor: str,
+    cpc_max_seq_length: int = 6144,
+    cpc_preset: str = "llama",
+    project=PROJECT_ID,
+    location=LOCATION,
+    selection=None,
+    score_cache=None,
+    cpc_attention="bidirectional",
+    dycp=None,
+    provence=None,
+    cpc_ablate=(),
+):
     if compressor == "none":
         return None
 
@@ -272,18 +308,33 @@ def build_tokenwise(compressor: str, cpc_max_seq_length: int = 6144, cpc_preset:
         return TokenWise(model=GeminiCompressor(project=project, location=location, model=MODEL), selection=selection)
 
     if compressor == "cpc":
-        encoder = {"speaker_labels": "no-speaker-labels" not in cpc_ablate,
-                   "session_chunks": "cross-session-chunks" not in cpc_ablate}
+        encoder = {
+            "speaker_labels": "no-speaker-labels" not in cpc_ablate,
+            "session_chunks": "cross-session-chunks" not in cpc_ablate,
+        }
 
         def factory():
-            return CPCCompressor(preset=cpc_preset, max_seq_length=cpc_max_seq_length, attention=cpc_attention,
-                                 **encoder)
+            return CPCCompressor(
+                preset=cpc_preset, max_seq_length=cpc_max_seq_length, attention=cpc_attention, **encoder
+            )
 
         model = (
             CachedScorer(factory, score_cache, cpc_cache_key(cpc_preset, cpc_max_seq_length, cpc_attention, **encoder))
-            if score_cache else factory()
+            if score_cache
+            else factory()
         )
-        return TokenWise(model=model, selection=selection)
+        tokenwise = TokenWise(model=model, selection=selection)
+        if selection is not None and selection.provence_weight > 0:
+            # Fusion: Provence's sentence scores blended into CPC's (fuse_scores).
+            # Cached like CPC's, so a weight sweep scores each question once.
+            def provence_factory():
+                return ProvenceCompressor(model=PROVENCE_DEFAULT_MODEL)
+
+            key = "provence-" + PROVENCE_DEFAULT_MODEL.replace("/", "--") + "-v1"
+            tokenwise.secondary = (
+                CachedScorer(provence_factory, score_cache, key) if score_cache else provence_factory()
+            )
+        return tokenwise
 
     return TokenWise(selection=selection)
 
@@ -314,7 +365,9 @@ ABLATIONS = {
 
 def make_runner(agent, memory, tokenwise, settings):
     return Runner(
-        agent, memory, tokenwise=tokenwise,
+        agent,
+        memory,
+        tokenwise=tokenwise,
         compression_sentence_threshold=settings.sentence_threshold,
         compression_token_budget=settings.token_budget,
         recent_turns=settings.recent_turns,
@@ -376,7 +429,10 @@ def compress_paper(item, tokenwise, settings, memory, question):
     CPC on the transcript, scored against the plain question. Only the
     budget measure (cl100k) and the answer prompt match the other runs."""
     text = tokenwise.model.compress_document(
-        paper_transcript(memory, settings.paper_turn_dates), item["question"], settings.token_budget, count_tokens=tokenwise.count_tokens,
+        paper_transcript(memory, settings.paper_turn_dates),
+        item["question"],
+        settings.token_budget,
+        count_tokens=tokenwise.count_tokens,
     )
     history = [
         types.Content(role="user", parts=[types.Part.from_text(text=f"Relevant earlier context:\n{text}")]),
@@ -423,8 +479,11 @@ def compress_question(item, tokenwise, settings, decompositions=None, seeded_mem
     form, mode is "compressed_history"/"full_history", question is the
     (possibly date-tagged) text the answering model gets, and info holds
     compressed-token counts and evidence recall."""
-    memory = (seeded_memory.copy() if seeded_memory is not None
-              else seed_memory_from_haystack(item, date_in_text="date-in-text" in settings.ablate))
+    memory = (
+        seeded_memory.copy()
+        if seeded_memory is not None
+        else seed_memory_from_haystack(item, date_in_text="date-in-text" in settings.ablate)
+    )
     question = _question_with_date_tag(item)
     if settings.paper:
         described, mode, info = compress_paper(item, tokenwise, settings, memory, question)
@@ -439,7 +498,7 @@ def compress_question(item, tokenwise, settings, decompositions=None, seeded_mem
     return Agent.describe_history(history), mode, question, compression_info(runner, memory, item, mode)
 
 
-def answer_from_compressed(agent, described_history):
+def answer_from_compressed(agent, described_history, usage=None):
     """The answering half of answer_question, split out so it can run on a
     different machine than the one that produced described_history (see
     --stage answer) -- one Gemini call, no compressor, no GPU. Rebuilds
@@ -452,6 +511,18 @@ def answer_from_compressed(agent, described_history):
         for entry in described_history
     ]
     response = agent.call_model(history)
+    if usage is not None:  # caller wants the token counts (answer cost)
+        meta = getattr(response, "usage_metadata", None)
+        usage.update(
+            {
+                key: getattr(meta, attr, None)
+                for key, attr in (
+                    ("prompt_tokens", "prompt_token_count"),
+                    ("output_tokens", "candidates_token_count"),
+                    ("thinking_tokens", "thoughts_token_count"),
+                )
+            }
+        )
     return response.text or ""
 
 
@@ -529,7 +600,8 @@ def run_tag(stage, settings):
     # DyCP and native-threshold Provence decide how much to keep themselves,
     # so they have no token budget.
     self_sized = compressor == "dycp" or (
-        compressor == "provence" and (settings.get("provence") or {}).get("threshold") is not None)
+        compressor == "provence" and (settings.get("provence") or {}).get("threshold") is not None
+    )
     if compressor not in (None, "none") and not self_sized and settings.get("token_budget"):
         parts.append(f"b{settings['token_budget']}")
 
@@ -538,6 +610,9 @@ def run_tag(stage, settings):
         parts.append(f"w{selection['window']}")
     if selection.get("pair_turns"):
         parts.append("pair")
+    if selection.get("entity_weight"):
+        source = "-".join(Path(path).stem for path in settings.get("entity_keys") or [])
+        parts.append(f"ent{selection['entity_weight']:g}" + (f"-{source}" if source else ""))
     if selection.get("top_sessions"):
         parts.append(f"top{selection['top_sessions']}")
     if selection.get("mmr_lambda"):
@@ -546,6 +621,8 @@ def run_tag(stage, settings):
         parts.append(f"rec{selection['recency_weight']:g}")
     if selection.get("lexical_weight"):
         parts.append(f"hyb{selection['lexical_weight']:g}")
+    if selection.get("provence_weight"):
+        parts.append(f"fuse{selection['provence_weight']:g}")
     if settings.get("decompositions"):
         parts.append("mq")
     if settings.get("paper_cpc"):
@@ -562,11 +639,12 @@ ANSWER_DIR = "gemini_runs"
 JUDGE_DIR = "judge_runs"
 
 
-def stage_output(log_dir, subdir, from_log_path, from_run_start):
+def stage_output(log_dir, subdir, from_log_path, from_run_start, suffix=""):
     """(run_number, path, results already there) for an answer/judge stage
     reading `from_log_path`. Re-running the same command continues that
-    file, skipping questions it already holds."""
-    path = Path(log_dir) / subdir / from_log_path.name
+    file, skipping questions it already holds. `suffix` (e.g. '_notes' for
+    --reader notes) keeps a variant's answers apart from the plain ones."""
+    path = Path(log_dir) / subdir / f"{from_log_path.stem}{suffix}{from_log_path.suffix}"
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = load_run_log(path)[1] if path.exists() else []
     if existing:
@@ -584,8 +662,11 @@ def find_run_log(log_dir, run_number, gcs_uri=None):
     """The existing log for `run_number`, whatever its settings tag --
     downloaded from the GCS mirror first if it only exists there (a fresh
     Vertex AI container starts with an empty local logs/)."""
-    local = [path for path in log_dir.glob(f"eval_longmemeval_run{run_number:04d}*.jsonl")
-             if (match := RUN_LOG_PATTERN.match(path.name)) and int(match.group(1)) == run_number]
+    local = [
+        path
+        for path in log_dir.glob(f"eval_longmemeval_run{run_number:04d}*.jsonl")
+        if (match := RUN_LOG_PATTERN.match(path.name)) and int(match.group(1)) == run_number
+    ]
     if len(local) > 1:
         names = "\n  ".join(sorted(path.name for path in local))
         raise SystemExit(f"--resume {run_number} matches {len(local)} logs; pass the one you mean by path:\n  {names}")
@@ -595,9 +676,11 @@ def find_run_log(log_dir, run_number, gcs_uri=None):
     if gcs_uri:
         from google.cloud import storage
 
-        bucket_name, _, prefix = gcs_uri[len("gs://"):].partition("/")
+        bucket_name, _, prefix = gcs_uri[len("gs://") :].partition("/")
         list_prefix = f"{prefix.rstrip('/')}/" if prefix else ""
-        for blob in storage.Client().list_blobs(bucket_name, prefix=f"{list_prefix}eval_longmemeval_run{run_number:04d}"):
+        for blob in storage.Client().list_blobs(
+            bucket_name, prefix=f"{list_prefix}eval_longmemeval_run{run_number:04d}"
+        ):
             name = blob.name.rsplit("/", 1)[-1]
             match = RUN_LOG_PATTERN.match(name)
             if match and int(match.group(1)) == run_number:
@@ -606,8 +689,10 @@ def find_run_log(log_dir, run_number, gcs_uri=None):
                 blob.download_to_filename(str(path))
                 return path
 
-    raise SystemExit(f"--resume {run_number}: no eval_longmemeval_run{run_number:04d}*.jsonl in {log_dir}"
-                     + (f" or {gcs_uri}" if gcs_uri else ""))
+    raise SystemExit(
+        f"--resume {run_number}: no eval_longmemeval_run{run_number:04d}*.jsonl in {log_dir}"
+        + (f" or {gcs_uri}" if gcs_uri else "")
+    )
 
 
 def resolve_resume(log_dir, ref, gcs_uri=None):
@@ -658,12 +743,29 @@ def _resolve_source_settings(from_log_path, from_run_start):
     already-resolved 'source_settings' on from_run_start when present (an
     answer log whose own from_log was a compress log) instead of stopping
     one hop short at that intermediate log's empty settings."""
-    settings = dict(from_run_start["source_settings"]) if from_run_start.get("source_settings") else {
-        key: from_run_start.get(key)
-        for key in ("compressor", "cpc_preset", "cpc_max_seq_length", "cpc_attention", "token_budget",
-                    "min_unit_words", "selection", "decompositions", "dycp", "provence", "paper_cpc",
-                    "paper_dates", "ablate", "recent_turns")
-    }
+    settings = (
+        dict(from_run_start["source_settings"])
+        if from_run_start.get("source_settings")
+        else {
+            key: from_run_start.get(key)
+            for key in (
+                "compressor",
+                "cpc_preset",
+                "cpc_max_seq_length",
+                "cpc_attention",
+                "token_budget",
+                "min_unit_words",
+                "selection",
+                "decompositions",
+                "dycp",
+                "provence",
+                "paper_cpc",
+                "paper_dates",
+                "ablate",
+                "recent_turns",
+            )
+        }
+    )
     settings["resolved_from"] = str(from_log_path)
     return settings
 
@@ -672,7 +774,7 @@ def _gcs_blob(gcs_uri, filename):
     from google.cloud import storage
 
     assert gcs_uri.startswith("gs://"), "--log-gcs-uri must start with gs://"
-    bucket_name, _, prefix = gcs_uri[len("gs://"):].partition("/")
+    bucket_name, _, prefix = gcs_uri[len("gs://") :].partition("/")
     prefix = prefix.rstrip("/")
     blob_name = f"{prefix}/{filename}" if prefix else filename
     return storage.Client().bucket(bucket_name).blob(blob_name)
@@ -699,7 +801,7 @@ def _next_run_number(log_dir, gcs_uri=None):
         from google.cloud import storage
 
         assert gcs_uri.startswith("gs://"), "--log-gcs-uri must start with gs://"
-        bucket_name, _, prefix = gcs_uri[len("gs://"):].partition("/")
+        bucket_name, _, prefix = gcs_uri[len("gs://") :].partition("/")
         list_prefix = f"{prefix.rstrip('/')}/" if prefix else ""
         for blob in storage.Client().list_blobs(bucket_name, prefix=list_prefix):
             match = RUN_LOG_PATTERN.match(blob.name.rsplit("/", 1)[-1])
@@ -717,7 +819,7 @@ JUDGE_PROMPT_TEMPLATE = (
     "Assistant's response: {predicted}\n\n"
     "Grade the response as CORRECT if it conveys the same essential fact(s) as "
     "the reference answer, even if worded differently, abbreviated, or phrased "
-    "in a different grammatical person (e.g. \"your sister\" vs \"my sister\" "
+    'in a different grammatical person (e.g. "your sister" vs "my sister" '
     "both refer to the same person from the assistant's point of view). Minor "
     "omissions of extra detail are fine as long as the core answer matches.\n\n"
     "If the reference answer says the information was not mentioned/available "
@@ -751,14 +853,14 @@ def run_judge_stage(args, log_dir):
     verdicts side by side (heuristic_correct, llm_judge_correct) rather than
     replacing one with the other, so the two can be compared directly."""
     existing_results = []
+    resumed = (0, Path())
     if args.resume is not None:
-        run_number, log_path = resolve_resume(log_dir, args.resume, args.log_gcs_uri)
+        run_number, log_path = resumed = resolve_resume(log_dir, args.resume, args.log_gcs_uri)
         run_start, existing_results = load_run_log(log_path)
         if run_start is None:
             raise SystemExit(f"--resume {run_number}: {log_path} has no run_start record to resume from")
         args.from_log = run_start.get("from_log", args.from_log)
-        print(f"Resuming judge run {run_number} ({log_path}): "
-              f"{len(existing_results)} results already logged")
+        print(f"Resuming judge run {run_number} ({log_path}): {len(existing_results)} results already logged")
 
     if not args.from_log:
         raise SystemExit("--stage judge requires --from-log <path to a --stage full/answer JSONL log>")
@@ -776,9 +878,12 @@ def run_judge_stage(args, log_dir):
 
     if args.resume is None:
         run_number, log_path, existing_results = stage_output(log_dir, JUDGE_DIR, from_log_path, from_run_start)
+    else:
+        run_number, log_path = resumed
 
     from google import genai
     from google.genai import types as genai_types
+
     judge_client = genai.Client(
         vertexai=True,
         project=args.project,
@@ -788,45 +893,61 @@ def run_judge_stage(args, log_dir):
     log_gcs_blob = _gcs_blob(args.log_gcs_uri, log_path.name) if args.log_gcs_uri else None
 
     # Re-judge questions whose judged answer was a failed call that has
-    # since been retried in the source log.
-    retried = {(row["config"], row["question_id"]) for row in answered_rows
-               if not str(row.get("predicted", "")).startswith("[ERROR")}
-    existing_results = [row for row in existing_results
-                        if not (str(row.get("predicted", "")).startswith("[ERROR")
-                                and (row["config"], row["question_id"]) in retried)]
+    # since been retried in the source log, and questions whose judge call
+    # itself failed (network, quota); the new row supersedes the old one.
+    retried = {
+        (row["config"], row["question_id"])
+        for row in answered_rows
+        if not str(row.get("predicted", "")).startswith("[ERROR")
+    }
+    existing_results = [
+        row
+        for row in existing_results
+        if not (str(row.get("predicted", "")).startswith("[ERROR") and (row["config"], row["question_id"]) in retried)
+        and not str(row.get("llm_judge_verdict", "")).startswith("[ERROR")
+    ]
     already_done = {(row["config"], row["question_id"]) for row in existing_results}
     results = {}
     for row in existing_results:
         results.setdefault(row["config"], []).append(row)
 
     with log_path.open("a", encoding="utf-8") as log_file:
+
         def log(record):
             log_file.write(json.dumps({"timestamp": datetime.now().isoformat(), **record}) + "\n")
             log_file.flush()
             if log_gcs_blob is not None:
                 log_gcs_blob.upload_from_filename(str(log_path))
 
-        log({
-            "event": "run_resume" if args.resume is not None or existing_results else "run_start",
-            "run": run_number,
-            "stage": "judge",
-            "model": MODEL,
-            "from_log": str(from_log_path),
-            "source_settings": source_settings,
-            "project": args.project,
-            "location": args.location,
-        })
+        log(
+            {
+                "event": "run_resume" if args.resume is not None or existing_results else "run_start",
+                "run": run_number,
+                "stage": "judge",
+                "model": MODEL,
+                "from_log": str(from_log_path),
+                "source_settings": source_settings,
+                "project": args.project,
+                "location": args.location,
+            }
+        )
 
         for index, arow in enumerate(answered_rows, start=1):
             key = (arow["config"], arow["question_id"])
             if key in already_done:
                 continue
 
-            print(f"\n[{index}/{len(answered_rows)}] {arow['question_id']} ({arow['question_type']}): "
-                  f"{arow['question'][:120]}", flush=True)
+            print(
+                f"\n[{index}/{len(answered_rows)}] {arow['question_id']} ({arow['question_type']}): "
+                f"{arow['question'][:120]}",
+                flush=True,
+            )
             try:
                 judge_correct, verdict = llm_judge_grade(
-                    judge_client, arow["question"], arow["reference"], arow["predicted"],
+                    judge_client,
+                    arow["question"],
+                    arow["reference"],
+                    arow["predicted"],
                 )
             except Exception as exc:
                 judge_correct, verdict = None, f"[ERROR: {exc}]"
@@ -847,8 +968,11 @@ def run_judge_stage(args, log_dir):
 
             agreement = "" if judge_correct == row["heuristic_correct"] else "  <-- DISAGREES with heuristic"
             status = "CORRECT" if judge_correct else "INCORRECT"
-            print(f"  [{row['config']}] judge={status}{agreement} | "
-                  f"heuristic={'PASS' if row['heuristic_correct'] else 'FAIL'}", flush=True)
+            print(
+                f"  [{row['config']}] judge={status}{agreement} | "
+                f"heuristic={'PASS' if row['heuristic_correct'] else 'FAIL'}",
+                flush=True,
+            )
 
         print("\n=== Summary (LLM judge vs. heuristic grader) ===")
         summary = {}
@@ -856,8 +980,10 @@ def run_judge_stage(args, log_dir):
             total = len(rows)
             judge_passed = sum(1 for row in rows if row.get("llm_judge_correct"))
             heuristic_passed = sum(1 for row in rows if row.get("heuristic_correct"))
-            print(f"\n{name}: heuristic {heuristic_passed}/{total} ({heuristic_passed / total:.1%})  "
-                  f"vs  LLM-judge {judge_passed}/{total} ({judge_passed / total:.1%})")
+            print(
+                f"\n{name}: heuristic {heuristic_passed}/{total} ({heuristic_passed / total:.1%})  "
+                f"vs  LLM-judge {judge_passed}/{total} ({judge_passed / total:.1%})"
+            )
             by_type = {}
             for row in rows:
                 by_type.setdefault(row["question_type"], []).append(row)
@@ -880,8 +1006,9 @@ def run_answer_stage(args, log_dir):
     loop below, but iterates compress-stage rows instead of dataset items,
     since there's no dataset load or compressor to build here at all."""
     existing_results = []
+    resumed = (0, Path())
     if args.resume is not None:
-        run_number, log_path = resolve_resume(log_dir, args.resume, args.log_gcs_uri)
+        run_number, log_path = resumed = resolve_resume(log_dir, args.resume, args.log_gcs_uri)
         run_start, existing_results = load_run_log(log_path)
         if run_start is None:
             raise SystemExit(f"--resume {run_number}: {log_path} has no run_start record to resume from")
@@ -889,8 +1016,7 @@ def run_answer_stage(args, log_dir):
         # run -- a resumed one already has it recorded in its own
         # run_start, from when it was first started.
         args.from_log = run_start.get("from_log", args.from_log)
-        print(f"Resuming answer run {run_number} ({log_path}): "
-              f"{len(existing_results)} results already logged")
+        print(f"Resuming answer run {run_number} ({log_path}): {len(existing_results)} results already logged")
 
     if not args.from_log:
         raise SystemExit("--stage answer requires --from-log <path to a --stage compress JSONL log>")
@@ -906,9 +1032,25 @@ def run_answer_stage(args, log_dir):
     source_settings = _resolve_source_settings(from_log_path, from_run_start)
 
     if args.resume is None:
-        run_number, log_path, existing_results = stage_output(log_dir, ANSWER_DIR, from_log_path, from_run_start)
+        suffix = (
+            ("" if args.reader == "plain" else f"_{args.reader}")
+            + ("" if args.answer_model == MODEL else f"_{args.answer_model}")
+            + ("" if args.answer_temperature is None else f"_t{args.answer_temperature:g}")
+            + (f"_{args.answer_tag}" if args.answer_tag else "")
+        )
+        run_number, log_path, existing_results = stage_output(
+            log_dir, ANSWER_DIR, from_log_path, from_run_start, suffix=suffix
+        )
+    else:
+        run_number, log_path = resumed
 
-    agent = build_agent(project=args.project, location=args.location)
+    agent = build_agent(
+        project=args.project,
+        location=args.location,
+        reader=args.reader,
+        model=args.answer_model,
+        temperature=args.answer_temperature,
+    )
     log_gcs_blob = _gcs_blob(args.log_gcs_uri, log_path.name) if args.log_gcs_uri else None
 
     # A failed Gemini call (quota, auth, network) is retried on the next run
@@ -920,34 +1062,44 @@ def run_answer_stage(args, log_dir):
         results.setdefault(row["config"], []).append(row)
 
     with log_path.open("a", encoding="utf-8") as log_file:
+
         def log(record):
             log_file.write(json.dumps({"timestamp": datetime.now().isoformat(), **record}) + "\n")
             log_file.flush()
             if log_gcs_blob is not None:
                 log_gcs_blob.upload_from_filename(str(log_path))
 
-        log({
-            "event": "run_resume" if args.resume is not None or existing_results else "run_start",
-            "run": run_number,
-            "stage": "answer",
-            "model": MODEL,
-            "from_log": str(from_log_path),
-            "source_settings": source_settings,
-            "project": args.project,
-            "location": args.location,
-        })
+        log(
+            {
+                "event": "run_resume" if args.resume is not None or existing_results else "run_start",
+                "run": run_number,
+                "stage": "answer",
+                "model": MODEL,
+                "from_log": str(from_log_path),
+                "source_settings": source_settings,
+                "project": args.project,
+                "location": args.location,
+            }
+        )
 
         for index, crow in enumerate(compress_rows, start=1):
             key = (crow["config"], crow["question_id"])
             if key in already_done:
                 continue
 
-            print(f"\n[{index}/{len(compress_rows)}] {crow['question_id']} ({crow['question_type']}): "
-                  f"{crow['question'][:120]}", flush=True)
+            print(
+                f"\n[{index}/{len(compress_rows)}] {crow['question_id']} ({crow['question_type']}): "
+                f"{crow['question'][:120]}",
+                flush=True,
+            )
+            usage = {}
             try:
-                predicted = answer_from_compressed(agent, crow["history"])
+                reply = answer_from_compressed(agent, crow["history"], usage=usage)
             except Exception as exc:
-                predicted = f"[ERROR: {exc}]"
+                reply = f"[ERROR: {exc}]"
+            # With --reader notes the reply is notes + reasoning + "Answer: ...";
+            # only the final answer is graded and judged.
+            predicted = reply if args.reader != "notes" or reply.startswith("[ERROR") else final_answer(reply)
 
             correct = grade(predicted, crow["reference"])
             compressed_context = _compressed_context_from_described(crow.get("history"), crow.get("compression_mode"))
@@ -963,6 +1115,10 @@ def run_answer_stage(args, log_dir):
                 "compressed_context": compressed_context,
                 "compressed_tokens": crow.get("compressed_tokens"),
                 "evidence": crow.get("evidence"),
+                **({"reader": args.reader, "reply": reply} if args.reader != "plain" else {}),
+                "answer_model": args.answer_model,
+                "answer_temperature": args.answer_temperature,
+                "usage": usage or None,
             }
             results.setdefault(row["config"], []).append(row)
             log({"event": "result", **row})
@@ -996,12 +1152,14 @@ def run_answer_stage(args, log_dir):
 def selection_from_args(args):
     return SelectionConfig(
         lexical_weight=args.lexical_weight,
+        provence_weight=args.provence_weight,
         recency_weight=args.recency_weight,
         mmr_lambda=args.mmr_lambda,
         mmr_similarity=args.mmr_similarity,
         top_sessions=args.top_sessions,
         window=args.window,
         pair_turns=args.pair_turns,
+        entity_weight=args.entity_weight,
         flat_output="flat-output" in (getattr(args, "ablate", None) or ()),
     )
 
@@ -1029,8 +1187,10 @@ def describe_evidence(info):
     if not evidence or not evidence["evidence_turns"]:
         return ""
     tokens = info.get("compressed_tokens")
-    return (f"[evidence {evidence['evidence_turns_kept']}/{evidence['evidence_turns']} turns"
-            f"{f', {tokens} tok' if tokens is not None else ''}]")
+    return (
+        f"[evidence {evidence['evidence_turns_kept']}/{evidence['evidence_turns']} turns"
+        f"{f', {tokens} tok' if tokens is not None else ''}]"
+    )
 
 
 def run_recall_stage(args):
@@ -1061,11 +1221,15 @@ def run_recall_stage(args):
         if context is None:
             context = _compressed_context_from_described(row.get("history"), mode)
         context = (context or "").removeprefix("Relevant earlier context:\n")
-        by_config.setdefault(row["config"], []).append({
-            "question_type": row["question_type"],
-            "evidence": text_matched_evidence_recall(item, context, mode, recent_turns),
-            "compressed_tokens": len(encoding.encode(context, disallowed_special=())) if mode == "compressed_history" else None,
-        })
+        by_config.setdefault(row["config"], []).append(
+            {
+                "question_type": row["question_type"],
+                "evidence": text_matched_evidence_recall(item, context, mode, recent_turns),
+                "compressed_tokens": len(encoding.encode(context, disallowed_special=()))
+                if mode == "compressed_history"
+                else None,
+            }
+        )
 
     for name, measured in by_config.items():
         summarize_recall(f"{name} (text-matched)", measured)
@@ -1109,7 +1273,9 @@ def run_decompose_stage(args):
     question_types = args.question_types.split(",") if args.question_types else None
     items = load_items(args.dataset, limit=args.limit, seed=args.seed, question_types=question_types)
     client = genai.Client(
-        vertexai=True, project=args.project, location=args.location,
+        vertexai=True,
+        project=args.project,
+        location=args.location,
         http_options=types.HttpOptions(timeout=120_000),
     )
     config = types.GenerateContentConfig(temperature=0, response_mime_type="application/json")
@@ -1143,181 +1309,300 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--question-types", default=None, help="Comma-separated question_type filter.")
     parser.add_argument(
-        "--dataset", choices=["longmemeval_s", "locomo"], default="longmemeval_s",
+        "--dataset",
+        choices=["longmemeval_s", "locomo"],
+        default="longmemeval_s",
         help="'locomo' is LoCoMo (ACL 2024): 10 long two-person conversations, 1,540 QA pairs in "
-             "categories multi-hop/temporal/open-domain/single-hop (adversarial excluded unless "
-             "named in --question-types). Pass --limit 1540 for all of them.",
+        "categories multi-hop/temporal/open-domain/single-hop (adversarial excluded unless "
+        "named in --question-types). Pass --limit 1540 for all of them.",
     )
     parser.add_argument(
-        "--token-budget", type=int, default=500,
+        "--token-budget",
+        type=int,
+        default=500,
         help="compression_token_budget. Haystacks run tens of thousands of words, so "
-             "main.py's interactive default (50) is far too tight here.",
+        "main.py's interactive default (50) is far too tight here.",
     )
     parser.add_argument("--sentence-threshold", type=int, default=20)
     parser.add_argument("--recent-turns", type=int, default=4)
     parser.add_argument(
-        "--paper-cpc", action="store_true",
+        "--paper-cpc",
+        action="store_true",
         help="Baseline for the ablation: CPC as the paper runs it (--compressor cpc only). The whole "
-             "history becomes one plain transcript with dates and speaker labels in the text; no "
-             "recent turns, sentence threshold, units, session chunks or rendering. Budget still "
-             "in cl100k tokens and the answer prompt unchanged, so it compares with the other runs.",
+        "history becomes one plain transcript with dates and speaker labels in the text; no "
+        "recent turns, sentence threshold, units, session chunks or rendering. Budget still "
+        "in cl100k tokens and the answer prompt unchanged, so it compares with the other runs.",
     )
     parser.add_argument(
-        "--paper-dates", choices=["session", "turn"], default="session",
+        "--paper-dates",
+        choices=["session", "turn"],
+        default="session",
         help="--paper-cpc only: one '[Session: date]' line per session (default), or the date at "
-             "the start of every turn line, so a kept sentence can't lose its date.",
+        "the start of every turn line, so a kept sentence can't lose its date.",
     )
     parser.add_argument(
-        "--ablate", action="append", choices=sorted(ABLATIONS), default=[],
+        "--ablate",
+        action="append",
+        choices=sorted(ABLATIONS),
+        default=[],
         help="Switch off one of our changes to the paper's CPC (repeatable): "
-             + "; ".join(f"{name} = change {what}" for name, what in ABLATIONS.items()) + ".",
+        + "; ".join(f"{name} = change {what}" for name, what in ABLATIONS.items())
+        + ".",
     )
     parser.add_argument(
         "--compressor",
         choices=["lexical", "gemini", "cpc", "dycp", "provence", "none"],
         default="lexical",
         help="'lexical' ranks sentences by query word-overlap (default, no extra "
-             "model load). 'cpc' uses the local context-aware embedding model "
-             "(replicate/cpc_compressor.py) -- slow to load, needs torch/transformers/peft. "
-             "'gemini' calls a hosted Gemini model to do the compression itself. "
-             "'dycp' reproduces DyCP (arXiv 2601.07994): whole turns scored with a "
-             "bi-encoder, contiguous spans picked by KadaneDial, no token budget. "
-             "'provence' scores sentences with Provence (ICLR 2025)'s token keep/drop head "
-             "and fills the token budget, or applies its own threshold with --provence-threshold. "
-             "'none' disables compression entirely (tokenwise=None, full raw haystack sent "
-             "as context every call) -- the uncompressed baseline, logged as "
-             "'baseline_full_history' just like --compare-baseline's second config.",
+        "model load). 'cpc' uses the local context-aware embedding model "
+        "(replicate/cpc_compressor.py) -- slow to load, needs torch/transformers/peft. "
+        "'gemini' calls a hosted Gemini model to do the compression itself. "
+        "'dycp' reproduces DyCP (arXiv 2601.07994): whole turns scored with a "
+        "bi-encoder, contiguous spans picked by KadaneDial, no token budget. "
+        "'provence' scores sentences with Provence (ICLR 2025)'s token keep/drop head "
+        "and fills the token budget, or applies its own threshold with --provence-threshold. "
+        "'none' disables compression entirely (tokenwise=None, full raw haystack sent "
+        "as context every call) -- the uncompressed baseline, logged as "
+        "'baseline_full_history' just like --compare-baseline's second config.",
     )
     parser.add_argument(
-        "--cpc-max-seq-length", type=int, default=6144,
+        "--cpc-max-seq-length",
+        type=int,
+        default=6144,
         help="Per-chunk token budget for the CPC compressor's forward pass (only applies to "
-             "--compressor cpc). 6144 is the length the CPC LoRA was trained at "
-             "(cpc-1.0-*.json), so most sessions fit in one chunk. On an 8GB card this "
-             "can exhaust VRAM (Windows then pages GPU memory to system RAM, making each "
-             "forward pass take minutes) -- pass 1536 there instead.",
+        "--compressor cpc). 6144 is the length the CPC LoRA was trained at "
+        "(cpc-1.0-*.json), so most sessions fit in one chunk. On an 8GB card this "
+        "can exhaust VRAM (Windows then pages GPU memory to system RAM, making each "
+        "forward pass take minutes) -- pass 1536 there instead.",
     )
     parser.add_argument(
         "--cpc-preset",
         choices=["llama", "mistral"],
         default="llama",
         help="Which CPC base model + LoRA adapter to use (only applies to --compressor cpc; "
-             "see core/cpcCompressor.py). 'llama' is unsloth/Llama-3.2-1B-Instruct -- runs on "
-             "an 8GB laptop GPU. 'mistral' is mistralai/Mistral-7B-Instruct-v0.2 -- a full 7B "
-             "model, well beyond an 8GB card; run it on Vertex AI instead (see eval/deploy.sh).",
+        "see core/cpc_compressor.py). 'llama' is unsloth/Llama-3.2-1B-Instruct -- runs on "
+        "an 8GB laptop GPU. 'mistral' is mistralai/Mistral-7B-Instruct-v0.2 -- a full 7B "
+        "model, well beyond an 8GB card; run it on Vertex AI instead (see scripts/deploy.sh).",
     )
     parser.add_argument(
-        "--cpc-attention", choices=["bidirectional", "causal"], default="bidirectional",
+        "--cpc-attention",
+        choices=["bidirectional", "causal"],
+        default="bidirectional",
         help="CPC encoder attention. 'bidirectional' is what the CPC LoRA was trained with; "
-             "'causal' reproduces runs made before it was enforced (for the before/after comparison).",
+        "'causal' reproduces runs made before it was enforced (for the before/after comparison).",
     )
-    parser.add_argument("--dycp-retriever", default=DYCP_DEFAULT_RETRIEVER,
-                        help="Bi-encoder for --compressor dycp (the paper's main results use contriever-msmarco).")
-    parser.add_argument("--dycp-tau", type=float, default=0.6,
-                        help="DyCP gain threshold: a turn adds gain z - tau to its span.")
-    parser.add_argument("--dycp-theta", type=float, default=1.0,
-                        help="DyCP stopping threshold: stop once the best remaining span gains less.")
-    parser.add_argument("--provence-model", default=PROVENCE_DEFAULT_MODEL,
-                        help="Provence checkpoint for --compressor provence.")
-    parser.add_argument("--provence-threshold", type=float, default=None,
-                        help="Use Provence's own keep decision at this threshold (the paper recommends "
-                             "0.1, or 0.5 for more compression) instead of filling --token-budget.")
     parser.add_argument(
-        "--compare-baseline", action="store_true",
+        "--dycp-retriever",
+        default=DYCP_DEFAULT_RETRIEVER,
+        help="Bi-encoder for --compressor dycp (the paper's main results use contriever-msmarco).",
+    )
+    parser.add_argument(
+        "--dycp-tau", type=float, default=0.6, help="DyCP gain threshold: a turn adds gain z - tau to its span."
+    )
+    parser.add_argument(
+        "--dycp-theta",
+        type=float,
+        default=1.0,
+        help="DyCP stopping threshold: stop once the best remaining span gains less.",
+    )
+    parser.add_argument(
+        "--provence-model", default=PROVENCE_DEFAULT_MODEL, help="Provence checkpoint for --compressor provence."
+    )
+    parser.add_argument(
+        "--provence-threshold",
+        type=float,
+        default=None,
+        help="Use Provence's own keep decision at this threshold (the paper recommends "
+        "0.1, or 0.5 for more compression) instead of filling --token-budget.",
+    )
+    parser.add_argument(
+        "--compare-baseline",
+        action="store_true",
         help="Also answer each question with no compression (the full raw haystack sent as "
-             "context). Expensive: tens of thousands of tokens per call.",
+        "context). Expensive: tens of thousands of tokens per call.",
     )
     parser.add_argument(
-        "--log-dir", default=str(LOGS_DIR),
+        "--log-dir",
+        default=str(LOGS_DIR),
         help="Directory for the per-question JSONL log (one file per run, same convention as "
-             "main.py's session logs). Written incrementally so a run can be inspected or "
-             "recovered even if it's interrupted partway through.",
+        "main.py's session logs). Written incrementally so a run can be inspected or "
+        "recovered even if it's interrupted partway through.",
     )
     parser.add_argument(
-        "--resume", default=None, metavar="RUN_NUMBER_OR_LOG",
+        "--resume",
+        default=None,
+        metavar="RUN_NUMBER_OR_LOG",
         help="Continue an existing run instead of starting a new one, e.g. --resume 10 "
-             "continues eval_longmemeval_run0010.jsonl. Pass the log's path instead of a number "
-             "when two logs share that run number. Safe to Ctrl+C a long run and pick "
-             "it back up later: this re-derives --limit/--seed/--question-types/--compressor/ "
-             "etc. from that run's own run_start record (so it reproduces the exact same "
-             "question sample regardless of what's passed this time), skips any "
-             "(config, question) pair already logged, and keeps appending to the same file.",
+        "continues eval_longmemeval_run0010.jsonl. Pass the log's path instead of a number "
+        "when two logs share that run number. Safe to Ctrl+C a long run and pick "
+        "it back up later: this re-derives --limit/--seed/--question-types/--compressor/ "
+        "etc. from that run's own run_start record (so it reproduces the exact same "
+        "question sample regardless of what's passed this time), skips any "
+        "(config, question) pair already logged, and keeps appending to the same file.",
     )
     parser.add_argument(
-        "--project", default=PROJECT_ID,
+        "--project",
+        default=PROJECT_ID,
         help="GCP project for Vertex AI. Defaults to GOOGLE_CLOUD_PROJECT, but a Vertex AI "
-             "custom job's container isn't guaranteed to have that env var set, so it can be "
-             "passed explicitly here instead (see eval/deploy.sh).",
+        "custom job's container isn't guaranteed to have that env var set, so it can be "
+        "passed explicitly here instead (see scripts/deploy.sh).",
     )
     parser.add_argument("--location", default=LOCATION)
     parser.add_argument(
-        "--log-gcs-uri", default=None, metavar="gs://bucket/prefix",
+        "--log-gcs-uri",
+        default=None,
+        metavar="gs://bucket/prefix",
         help="Also mirror the JSONL log to GCS after every result, re-uploading the whole "
-             "(small) file each time. For running on a Vertex AI custom job, whose local disk "
-             "doesn't survive a restart or preemption -- without this, --resume has nothing to "
-             "resume from if the job dies. Requires google-cloud-storage.",
+        "(small) file each time. For running on a Vertex AI custom job, whose local disk "
+        "doesn't survive a restart or preemption -- without this, --resume has nothing to "
+        "resume from if the job dies. Requires google-cloud-storage.",
     )
     parser.add_argument(
         "--stage",
         choices=["full", "compress", "answer", "judge", "decompose", "recall"],
         default="full",
         help="'full' (default): compress and answer in one pass. 'compress': only run the "
-             "compressor and log the resulting context -- no Gemini call, no GCP credentials "
-             "needed at all -- for compressing (e.g. --compressor cpc --cpc-preset mistral) on "
-             "a GPU machine that doesn't have Vertex AI access. 'answer': read a --stage "
-             "compress log via --from-log and only do the Gemini call + grading -- no GPU or "
-             "compressor needed -- for finishing the eval on a machine that does have Vertex AI "
-             "access. 'judge': read a 'full' or 'answer' log via --from-log and re-grade its "
-             "predicted/reference pairs with an LLM judge instead of the heuristic text-match "
-             "grader -- cheap (one Gemini call per row, no compression or answering redone) and "
-             "much less likely to mark a correct-but-differently-worded answer wrong. Left at "
-             "the default ('full') with no --project/GOOGLE_CLOUD_PROJECT set, this "
-             "automatically falls back to 'compress': Gemini isn't reachable anyway, so there's "
-             "no reason to fail loudly instead of just doing the half that still works. "
-             "'decompose': ask Gemini to split each sampled question into sub-queries and write "
-             "them to --decompositions (for multi-query scoring). 'recall': text-matched "
-             "evidence recall of an existing log's compressed contexts (--from-log) -- works on "
-             "logs from before selections were recorded; no model calls.",
+        "compressor and log the resulting context -- no Gemini call, no GCP credentials "
+        "needed at all -- for compressing (e.g. --compressor cpc --cpc-preset mistral) on "
+        "a GPU machine that doesn't have Vertex AI access. 'answer': read a --stage "
+        "compress log via --from-log and only do the Gemini call + grading -- no GPU or "
+        "compressor needed -- for finishing the eval on a machine that does have Vertex AI "
+        "access. 'judge': read a 'full' or 'answer' log via --from-log and re-grade its "
+        "predicted/reference pairs with an LLM judge instead of the heuristic text-match "
+        "grader -- cheap (one Gemini call per row, no compression or answering redone) and "
+        "much less likely to mark a correct-but-differently-worded answer wrong. Left at "
+        "the default ('full') with no --project/GOOGLE_CLOUD_PROJECT set, this "
+        "automatically falls back to 'compress': Gemini isn't reachable anyway, so there's "
+        "no reason to fail loudly instead of just doing the half that still works. "
+        "'decompose': ask Gemini to split each sampled question into sub-queries and write "
+        "them to --decompositions (for multi-query scoring). 'recall': text-matched "
+        "evidence recall of an existing log's compressed contexts (--from-log) -- works on "
+        "logs from before selections were recorded; no model calls.",
     )
     parser.add_argument(
-        "--from-log", default=None, metavar="PATH",
+        "--reader",
+        choices=["plain", "notes", "memory"],
+        default="plain",
+        help="--stage answer: 'notes' asks the model to list the relevant context with session dates, "
+        "reason, then give a final 'Answer:' line (Chain-of-Note reading, after LongMemEval); only "
+        "that line is graded. 'memory' explains that the earlier context is the agent's memory of this "
+        "user and asks it to build advice on it. Logged with a '_notes' / '_memory' suffix.",
+    )
+    parser.add_argument(
+        "--answer-model",
+        default=MODEL,
+        help="--stage answer: the answering model (default the paper's). The judge stays on the default "
+        "model either way. A non-default model adds its name to the answer log's suffix. Preview "
+        "models need --location global.",
+    )
+    parser.add_argument(
+        "--answer-temperature",
+        type=float,
+        default=None,
+        help="--stage answer: sampling temperature for the answering model (default: the model's own, "
+        "1.0 for Gemini 2.5 Flash). Adds '_t<value>' to the answer log's suffix.",
+    )
+    parser.add_argument(
+        "--answer-tag",
+        default=None,
+        metavar="TAG",
+        help="--stage answer: extra suffix for the answer log (e.g. 'rep2'), to answer the same "
+        "contexts again as a separate run -- measures how much two identical runs disagree.",
+    )
+    parser.add_argument(
+        "--from-log",
+        default=None,
+        metavar="PATH",
         help="A --stage compress log to read compressed histories from (required for --stage "
-             "answer), a --stage full/answer log to re-grade (required for --stage judge), or "
-             "any compress/answer/full log to measure (--stage recall).",
+        "answer), a --stage full/answer log to re-grade (required for --stage judge), or "
+        "any compress/answer/full log to measure (--stage recall).",
     )
     selection = parser.add_argument_group(
         "selection", "How scored sentences become the compressed context (extractive compressors)."
     )
-    selection.add_argument("--min-unit-words", type=int, default=4,
-                           help="Merge sentence fragments shorter than this many words into a "
-                                "neighbour from the same turn.")
-    selection.add_argument("--lexical-weight", type=float, default=0.0,
-                           help="Hybrid scoring: weight of BM25 in the fused score (0 = off).")
-    selection.add_argument("--recency-weight", type=float, default=0.0,
-                           help="Additive bonus (z units) for later sentences (0 = off).")
-    selection.add_argument("--mmr", type=float, default=0.0, dest="mmr_lambda",
-                           help="MMR redundancy penalty (z units per unit of similarity; 0 = off).")
-    selection.add_argument("--mmr-similarity", choices=["lexical", "semantic"], default="lexical",
-                           help="How MMR measures redundancy: word overlap, or cosine of CPC's own "
-                                "sentence embeddings (centered on the candidate pool; --compressor cpc only).")
-    selection.add_argument("--top-sessions", type=int, default=0,
-                           help="Two-level selection: only select from the K best-scoring sessions (0 = off).")
-    selection.add_argument("--window", type=int, default=0,
-                           help="Also include +-N neighbouring sentences of the same turn.")
-    selection.add_argument("--pair-turns", action="store_true",
-                           help="Also include the best sentence of the partner turn (reply/prompt).")
-    selection.add_argument("--decompositions", default=None, metavar="PATH",
-                           help="JSON {question_id: [sub-queries]} (from --stage decompose): score "
-                                "against each sub-query too, max-pooled.")
-    selection.add_argument("--score-cache", default=None, metavar="DIR",
-                           help="CPC only: cache scores on disk keyed by the exact candidate units, "
-                                "so re-runs with different selection settings skip the GPU entirely.")
+    selection.add_argument(
+        "--min-unit-words",
+        type=int,
+        default=4,
+        help="Merge sentence fragments shorter than this many words into a neighbour from the same turn.",
+    )
+    selection.add_argument(
+        "--lexical-weight", type=float, default=0.0, help="Hybrid scoring: weight of BM25 in the fused score (0 = off)."
+    )
+    selection.add_argument(
+        "--fuse-provence",
+        type=float,
+        default=0.0,
+        dest="provence_weight",
+        help="--compressor cpc only: blend Provence's z-scored sentence scores into CPC's "
+        "with this weight (0 = off, 0.5 = equal). Provence scores are cached with "
+        "--score-cache like CPC's.",
+    )
+    selection.add_argument(
+        "--recency-weight", type=float, default=0.0, help="Additive bonus (z units) for later sentences (0 = off)."
+    )
+    selection.add_argument(
+        "--mmr",
+        type=float,
+        default=0.0,
+        dest="mmr_lambda",
+        help="MMR redundancy penalty (z units per unit of similarity; 0 = off).",
+    )
+    selection.add_argument(
+        "--mmr-similarity",
+        choices=["lexical", "semantic"],
+        default="lexical",
+        help="How MMR measures redundancy: word overlap, or cosine of CPC's own "
+        "sentence embeddings (centered on the candidate pool; --compressor cpc only).",
+    )
+    selection.add_argument(
+        "--top-sessions",
+        type=int,
+        default=0,
+        help="Two-level selection: only select from the K best-scoring sessions (0 = off).",
+    )
+    selection.add_argument(
+        "--window", type=int, default=0, help="Also include +-N neighbouring sentences of the same turn."
+    )
+    selection.add_argument(
+        "--pair-turns", action="store_true", help="Also include the best sentence of the partner turn (reply/prompt)."
+    )
+    selection.add_argument(
+        "--entity-keys",
+        nargs="+",
+        default=None,
+        metavar="JSON",
+        help="Entity keys per unit from eval/entity_keys.py (ner or llm source).",
+    )
+    selection.add_argument(
+        "--entity-weight",
+        type=float,
+        default=0.0,
+        help="Blend this weight of the entity-key score (question keys + bridge via the "
+        "best sentences' noun phrases) into the z-scores; needs --entity-keys.",
+    )
+    selection.add_argument(
+        "--decompositions",
+        default=None,
+        metavar="PATH",
+        help="JSON {question_id: [sub-queries]} (from --stage decompose): score "
+        "against each sub-query too, max-pooled.",
+    )
+    selection.add_argument(
+        "--score-cache",
+        default=None,
+        metavar="DIR",
+        help="CPC only: cache scores on disk keyed by the exact candidate units, "
+        "so re-runs with different selection settings skip the GPU entirely.",
+    )
     args = parser.parse_args()
     if args.paper_cpc and args.stage in ("full", "compress") and args.resume is None:
         if args.compressor != "cpc":
             parser.error("--paper-cpc needs --compressor cpc")
         if args.decompositions or args.score_cache or selection_from_args(args) != SelectionConfig():
-            parser.error("--paper-cpc is the paper's plain CPC: no selection variants, "
-                         "--decompositions or --score-cache")
+            parser.error(
+                "--paper-cpc is the paper's plain CPC: no selection variants, --decompositions or --score-cache"
+            )
     if args.paper_dates != "session" and not args.paper_cpc:
         parser.error("--paper-dates only applies to --paper-cpc")
     if args.ablate and (args.paper_cpc or args.compressor != "cpc"):
@@ -1384,8 +1669,15 @@ def main():
             args.cpc_preset = run_start["cpc_preset"]
         for key, value in (run_start.get("selection") or {}).items():
             setattr(args, key, value)
-        for key in ("min_unit_words", "decompositions", "score_cache", "cpc_attention", "paper_cpc",
-                    "paper_dates", "ablate"):
+        for key in (
+            "min_unit_words",
+            "decompositions",
+            "score_cache",
+            "cpc_attention",
+            "paper_cpc",
+            "paper_dates",
+            "ablate",
+        ):
             if key in run_start:
                 setattr(args, key, run_start[key])
         if run_start.get("dycp"):
@@ -1396,23 +1688,30 @@ def main():
             args.provence_model = run_start["provence"]["model"]
             args.provence_threshold = run_start["provence"]["threshold"]
         args.compare_baseline = len(run_start.get("configs", [])) > 1
-        print(f"Resuming run {run_number} ({log_path}): "
-              f"{len(existing_results)} (config, question) results already logged")
+        print(
+            f"Resuming run {run_number} ({log_path}): {len(existing_results)} (config, question) results already logged"
+        )
     else:
         run_number = _next_run_number(log_dir, gcs_uri=args.log_gcs_uri)
-        log_path = new_log_path(log_dir, run_number, args.stage, {
-            "dataset": args.dataset,
-            "compressor": args.compressor,
-            "cpc_preset": args.cpc_preset,
-            "cpc_attention": args.cpc_attention,
-            "token_budget": args.token_budget,
-            "selection": asdict(selection_from_args(args)),
-            "decompositions": args.decompositions,
-            "provence": provence_settings(args),
-            "paper_cpc": args.paper_cpc,
-            "paper_dates": args.paper_dates,
-            "ablate": args.ablate,
-        })
+        log_path = new_log_path(
+            log_dir,
+            run_number,
+            args.stage,
+            {
+                "dataset": args.dataset,
+                "compressor": args.compressor,
+                "cpc_preset": args.cpc_preset,
+                "cpc_attention": args.cpc_attention,
+                "token_budget": args.token_budget,
+                "selection": asdict(selection_from_args(args)),
+                "entity_keys": args.entity_keys,
+                "decompositions": args.decompositions,
+                "provence": provence_settings(args),
+                "paper_cpc": args.paper_cpc,
+                "paper_dates": args.paper_dates,
+                "ablate": args.ablate,
+            },
+        )
         print(f"Logging full per-question results to {log_path}")
 
     question_types = args.question_types.split(",") if args.question_types else None
@@ -1425,17 +1724,38 @@ def main():
     agent = build_agent(project=args.project, location=args.location) if args.stage != "compress" else None
 
     selection_config = selection_from_args(args)
-    settings = CompressionSettings(args.sentence_threshold, args.token_budget, args.recent_turns, args.min_unit_words,
-                                   paper=args.paper_cpc, paper_turn_dates=args.paper_dates == "turn",
-                                   ablate=tuple(args.ablate))
+    settings = CompressionSettings(
+        args.sentence_threshold,
+        args.token_budget,
+        args.recent_turns,
+        args.min_unit_words,
+        paper=args.paper_cpc,
+        paper_turn_dates=args.paper_dates == "turn",
+        ablate=tuple(args.ablate),
+    )
     decompositions = load_decompositions(args.decompositions)
     tokenwise = build_tokenwise(
-        args.compressor, cpc_max_seq_length=args.cpc_max_seq_length, cpc_preset=args.cpc_preset,
-        project=args.project, location=args.location, selection=selection_config, score_cache=args.score_cache,
-        cpc_attention=args.cpc_attention, dycp=dycp_settings(args),
-        provence=provence_settings(args), cpc_ablate=tuple(args.ablate),
+        args.compressor,
+        cpc_max_seq_length=args.cpc_max_seq_length,
+        cpc_preset=args.cpc_preset,
+        project=args.project,
+        location=args.location,
+        selection=selection_config,
+        score_cache=args.score_cache,
+        cpc_attention=args.cpc_attention,
+        dycp=dycp_settings(args),
+        provence=provence_settings(args),
+        cpc_ablate=tuple(args.ablate),
     )
-    primary_name ="baseline_full_history" if args.compressor == "none" else f"compressed_{args.compressor}"
+    if args.entity_weight > 0:
+        if not args.entity_keys:
+            raise SystemExit("--entity-weight needs --entity-keys")
+        if tokenwise is None:
+            raise SystemExit("--entity-weight needs a compressor, not --compressor none")
+        from core.entities import load_index
+
+        tokenwise.entities = load_index(args.entity_keys)
+    primary_name = "baseline_full_history" if args.compressor == "none" else f"compressed_{args.compressor}"
     configs = [(primary_name, tokenwise)]
     if args.compare_baseline and primary_name != "baseline_full_history":
         configs.append(("baseline_full_history", None))
@@ -1444,9 +1764,12 @@ def main():
 
     # Failed Gemini calls and failed compressions (e.g. CUDA out of memory)
     # are retried on --resume; the retry's row supersedes them.
-    existing_results = [row for row in existing_results
-                        if not str(row.get("predicted", "")).startswith("[ERROR")
-                        and not str(row.get("question", "")).startswith("[ERROR")]
+    existing_results = [
+        row
+        for row in existing_results
+        if not str(row.get("predicted", "")).startswith("[ERROR")
+        and not str(row.get("question", "")).startswith("[ERROR")
+    ]
     already_done = {(row["config"], row["question_id"]) for row in existing_results}
     results = {name: [] for name, _ in configs}
     for row in existing_results:
@@ -1454,56 +1777,60 @@ def main():
             results[row["config"]].append(row)
 
     with log_path.open("a", encoding="utf-8") as log_file:
+
         def log(record):
             log_file.write(json.dumps({"timestamp": datetime.now().isoformat(), **record}) + "\n")
             log_file.flush()
             if log_gcs_blob is not None:
                 log_gcs_blob.upload_from_filename(str(log_path))
 
-        log({
-            "event": "run_resume" if args.resume is not None or existing_results else "run_start",
-            "run": run_number,
-            "stage": args.stage,
-            # The model used wherever this run calls Gemini: answering
-            # (build_agent), compression (build_tokenwise's "gemini" branch),
-            # and/or LLM-judge grading -- all three share this one constant
-            # today, but recording it here means a future change to MODEL
-            # doesn't silently make older logs ambiguous about which model
-            # produced them.
-            "model": MODEL,
-            "dataset": dataset_label(args.dataset),
-            "limit": args.limit,
-            "seed": args.seed,
-            "question_types": question_types,
-            "compressor": args.compressor,
-            "cpc_preset": args.cpc_preset if args.compressor == "cpc" else None,
-            "cpc_base_model": CPC_BASE_MODELS.get(args.cpc_preset) if args.compressor == "cpc" else None,
-            "cpc_max_seq_length": args.cpc_max_seq_length if args.compressor == "cpc" else None,
-            "cpc_attention": args.cpc_attention if args.compressor == "cpc" else None,
-            "token_budget": args.token_budget,
-            "sentence_threshold": args.sentence_threshold,
-            "recent_turns": args.recent_turns,
-            "min_unit_words": args.min_unit_words,
-            "selection": asdict(selection_config),
-            "decompositions": args.decompositions,
-            "paper_cpc": args.paper_cpc,
-            "paper_dates": args.paper_dates if args.paper_cpc else None,
-            "ablate": args.ablate,
-            "dycp": dycp_settings(args),
-            "provence": provence_settings(args),
-            "score_cache": args.score_cache,
-            "configs": [name for name, _ in configs],
-        })
+        log(
+            {
+                "event": "run_resume" if args.resume is not None or existing_results else "run_start",
+                "run": run_number,
+                "stage": args.stage,
+                # The model used wherever this run calls Gemini: answering
+                # (build_agent), compression (build_tokenwise's "gemini" branch),
+                # and/or LLM-judge grading -- all three share this one constant
+                # today, but recording it here means a future change to MODEL
+                # doesn't silently make older logs ambiguous about which model
+                # produced them.
+                "model": MODEL,
+                "dataset": dataset_label(args.dataset),
+                "limit": args.limit,
+                "seed": args.seed,
+                "question_types": question_types,
+                "compressor": args.compressor,
+                "cpc_preset": args.cpc_preset if args.compressor == "cpc" else None,
+                "cpc_base_model": CPC_BASE_MODELS.get(args.cpc_preset) if args.compressor == "cpc" else None,
+                "cpc_max_seq_length": args.cpc_max_seq_length if args.compressor == "cpc" else None,
+                "cpc_attention": args.cpc_attention if args.compressor == "cpc" else None,
+                "token_budget": args.token_budget,
+                "sentence_threshold": args.sentence_threshold,
+                "recent_turns": args.recent_turns,
+                "min_unit_words": args.min_unit_words,
+                "selection": asdict(selection_config),
+                "decompositions": args.decompositions,
+                "paper_cpc": args.paper_cpc,
+                "paper_dates": args.paper_dates if args.paper_cpc else None,
+                "ablate": args.ablate,
+                "dycp": dycp_settings(args),
+                "provence": provence_settings(args),
+                "score_cache": args.score_cache,
+                "entity_keys": args.entity_keys,
+                "configs": [name for name, _ in configs],
+            }
+        )
 
         for index, item in enumerate(items, start=1):
-            pending_configs = [
-                (name, tw) for name, tw in configs
-                if (name, item["question_id"]) not in already_done
-            ]
+            pending_configs = [(name, tw) for name, tw in configs if (name, item["question_id"]) not in already_done]
             if not pending_configs:
                 continue  # every config for this question was already logged in a prior session
 
-            print(f"\n[{index}/{len(items)}] {item['question_id']} ({item['question_type']}): {item['question'][:120]}", flush=True)
+            print(
+                f"\n[{index}/{len(items)}] {item['question_id']} ({item['question_type']}): {item['question'][:120]}",
+                flush=True,
+            )
             for name, tokenwise in pending_configs:
                 if args.stage == "compress":
                     try:
@@ -1528,7 +1855,11 @@ def main():
 
                 try:
                     predicted, compression_mode, compressed_context, info = answer_question(
-                        agent, item, tokenwise, settings, decompositions,
+                        agent,
+                        item,
+                        tokenwise,
+                        settings,
+                        decompositions,
                     )
                 except Exception as exc:
                     predicted, compression_mode, compressed_context, info = f"[ERROR: {exc}]", None, None, {}
@@ -1550,8 +1881,11 @@ def main():
                 log({"event": "result", **row})
 
                 status = "PASS" if correct else "FAIL"
-                print(f"  [{name}] {status} {describe_evidence(info)} | ref: {item['answer']!r} | "
-                      f"got: {predicted[:150]!r}", flush=True)
+                print(
+                    f"  [{name}] {status} {describe_evidence(info)} | ref: {item['answer']!r} | "
+                    f"got: {predicted[:150]!r}",
+                    flush=True,
+                )
 
         print("\n=== Summary ===")
         if args.stage == "compress":
@@ -1560,7 +1894,7 @@ def main():
             for name, count in compressed_counts.items():
                 print(f"{name}: compressed {count} questions")
                 recall[name] = summarize_recall(name, results[name])
-            print(f"\nAnswer these later (needs Vertex AI credentials, no GPU) with:")
+            print("\nAnswer these later (needs Vertex AI credentials, no GPU) with:")
             print(f"  python -m eval.longmemeval --stage answer --from-log {log_path} --project <project>")
             log({"event": "run_end", "compressed": compressed_counts, "evidence_recall": recall})
         else:

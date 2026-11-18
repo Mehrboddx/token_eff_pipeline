@@ -26,6 +26,7 @@ class Runner:
         self.memory = memory
         self.tokenwise = tokenwise
         self.max_steps = max_steps
+        self.current_turn: int | None = None  # set by the caller; logged with each model call
         self.compression_sentence_threshold = compression_sentence_threshold
         self.compression_token_budget = compression_token_budget
         self.recent_turns = recent_turns
@@ -88,12 +89,12 @@ class Runner:
         self.memory.add_user_message(query)
 
         model_pass = 0
-        for _ in range(self.max_steps):
+        while True:
             model_pass += 1
             history, mode = self._build_history(query, previous_sentences, retrieval_queries)
             response = self.agent.call_model(
                 history,
-                context_meta={"turn": getattr(self, "current_turn", None), "pass": model_pass, "mode": mode},
+                context_meta={"turn": self.current_turn, "pass": model_pass, "mode": mode},
             )
             content = response.candidates[0].content
             self.memory.add_model_content(content)
@@ -106,5 +107,5 @@ class Runner:
 
             tool_outputs = [self.agent.run_tool(call) for call in function_calls]
             self.memory.add_tool_results(tool_outputs)
-
-        return response  # safety cap: stop after max_steps even if the agent kept going
+            if model_pass >= self.max_steps:
+                return response  # safety cap: stop after max_steps even if the agent kept going

@@ -11,7 +11,7 @@
 set -euo pipefail
 
 # ----------------------------- CONFIG ---------------------------------
-PROJECT_ID="${PROJECT_ID:-cs-poc-pjtbxc0qllmcraowi6w1wmi}"
+PROJECT_ID="${PROJECT_ID:?set PROJECT_ID to your Google Cloud project}"
 REGION="${REGION:-us-central1}"          # needs GPU quota for the chosen accelerator
 REPO="${REPO:-cpc-longbench}"            # Artifact Registry repo name
 BUCKET="${BUCKET:-gs://replicate}" # created below if it doesn't exist

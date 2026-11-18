@@ -4,7 +4,7 @@ from tests import _fake_genai
 
 _fake_genai.install()
 
-from core.tokenWise import TokenWise  # noqa: E402
+from core.token_wise import TokenWise  # noqa: E402
 from core.units import prepare_units  # noqa: E402
 from eval.locomo import ADVERSARIAL_ANSWER, conversation_items, evidence_ids  # noqa: E402
 from eval.longmemeval import seed_memory_from_haystack  # noqa: E402
@@ -19,8 +19,12 @@ def sample():
             "session_1_date_time": "1:56 pm on 8 May, 2023",
             "session_1": [
                 {"speaker": "Caroline", "dia_id": "D1:1", "text": "I went to the LGBTQ support group yesterday."},
-                {"speaker": "Melanie", "dia_id": "D1:2", "text": "That sounds wonderful, I painted a sunrise.",
-                 "blip_caption": "a painting of a sunrise over a lake"},
+                {
+                    "speaker": "Melanie",
+                    "dia_id": "D1:2",
+                    "text": "That sounds wonderful, I painted a sunrise.",
+                    "blip_caption": "a painting of a sunrise over a lake",
+                },
             ],
             "session_2_date_time": "9:00 am on 20 May, 2023",
             "session_2": [
@@ -31,12 +35,24 @@ def sample():
             "session_3": [],
         },
         "qa": [
-            {"question": "When did Caroline go to the LGBTQ support group?", "answer": "7 May 2023",
-             "evidence": ["D1:1"], "category": 2},
-            {"question": "What did Melanie paint and what did she run?", "answer": 2022,
-             "evidence": ["D1:2; D2:1"], "category": 1},
-            {"question": "What did Caroline paint?", "adversarial_answer": "a sunrise",
-             "evidence": ["D1:2"], "category": 5},
+            {
+                "question": "When did Caroline go to the LGBTQ support group?",
+                "answer": "7 May 2023",
+                "evidence": ["D1:1"],
+                "category": 2,
+            },
+            {
+                "question": "What did Melanie paint and what did she run?",
+                "answer": 2022,
+                "evidence": ["D1:2; D2:1"],
+                "category": 1,
+            },
+            {
+                "question": "What did Caroline paint?",
+                "adversarial_answer": "a sunrise",
+                "evidence": ["D1:2"],
+                "category": 5,
+            },
         ],
     }
 
@@ -61,7 +77,9 @@ class ConversionTests(unittest.TestCase):
 
     def test_evidence_flags_are_per_question_and_shared_turns_untouched(self):
         temporal, multi, _ = self.items
-        self.assertEqual([t["has_answer"] for s in temporal["haystack_sessions"] for t in s], [True, False, False, False])
+        self.assertEqual(
+            [t["has_answer"] for s in temporal["haystack_sessions"] for t in s], [True, False, False, False]
+        )
         self.assertEqual([t["has_answer"] for s in multi["haystack_sessions"] for t in s], [False, True, True, False])
 
     def test_speakers_map_to_roles_and_captions_are_kept(self):
@@ -77,8 +95,10 @@ class MemoryTests(unittest.TestCase):
         self.memory = seed_memory_from_haystack(self.item)
 
     def test_raw_history_shows_absolute_date_and_speaker(self):
-        self.assertEqual(self.memory.history[0].parts[0].text,
-                         "(1:56 pm on 8 May, 2023) Caroline: I went to the LGBTQ support group yesterday.")
+        self.assertEqual(
+            self.memory.history[0].parts[0].text,
+            "(1:56 pm on 8 May, 2023) Caroline: I went to the LGBTQ support group yesterday.",
+        )
 
     def test_scored_text_has_no_metadata(self):
         texts = [entry["text"] for entry in self.memory.sentences]

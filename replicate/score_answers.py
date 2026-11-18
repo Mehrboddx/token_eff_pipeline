@@ -31,6 +31,7 @@ ANSWER_MARKER = "MODEL ANSWER"
 # Reimplementation of THUDM/LongBench's metrics.py, trimmed to the metric
 # functions actually used by the subsets we have output for.
 
+
 def _normalize_answer(s: str) -> str:
     s = s.lower()
     s = "".join(ch for ch in s if ch not in set(string.punctuation))
@@ -97,6 +98,7 @@ DATASET2METRIC = {
 
 # ---------------------------------------------------------------- parsing --
 
+
 def parse_scored_example(text: str) -> tuple[str, list[str], str] | None:
     """Return (dataset, ground_truths, model_answer), or None if unanswered."""
     if ANSWER_MARKER not in text:
@@ -109,13 +111,13 @@ def parse_scored_example(text: str) -> tuple[str, list[str], str] | None:
     answers_line = ""
     for line in header.splitlines():
         if line.startswith("Dataset: "):
-            dataset = line[len("Dataset: "):].strip()
+            dataset = line[len("Dataset: ") :].strip()
         elif line.startswith("Answers: "):
-            answers_line = line[len("Answers: "):].strip()
+            answers_line = line[len("Answers: ") :].strip()
 
-    ground_truths = [] if answers_line == "(none provided)" else [
-        a.strip() for a in answers_line.split("; ") if a.strip()
-    ]
+    ground_truths = (
+        [] if answers_line == "(none provided)" else [a.strip() for a in answers_line.split("; ") if a.strip()]
+    )
     return dataset, ground_truths, model_answer
 
 
@@ -170,13 +172,16 @@ def main():
     print(f"{'OVERALL':<20}{len(all_scores):>6}{sum(all_scores) / len(all_scores):>14.4f}")
 
     if unscored_no_answer:
-        print(f"\n{len(unscored_no_answer)} file(s) skipped (no MODEL ANSWER yet): "
-              f"{unscored_no_answer[:5]}{'...' if len(unscored_no_answer) > 5 else ''}")
+        print(
+            f"\n{len(unscored_no_answer)} file(s) skipped (no MODEL ANSWER yet): "
+            f"{unscored_no_answer[:5]}{'...' if len(unscored_no_answer) > 5 else ''}"
+        )
     if unscored_no_metric:
         print(f"\nSkipped dataset(s) with no metric implemented yet: {sorted(unscored_no_metric)}")
 
     if args.csv:
         import csv
+
         with open(args.csv, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(["file", "dataset", "score"])

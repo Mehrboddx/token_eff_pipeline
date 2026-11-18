@@ -7,11 +7,11 @@
 # push, job submission, GCS log mirroring, --resume) before spending GPU
 # time on Mistral. Mirrors replicate/deploy.sh's structure; the main
 # difference is the build context has to be the project root, not this
-# directory, since eval/longmemeval.py imports core/ and prompts/ too.
+# directory, since eval/longmemeval.py imports core/ and replicate/ too.
 #
 # Usage:
 #   1. Edit the CONFIG block below (or export the same vars before running).
-#   2. ./eval/deploy.sh          (run from anywhere -- it cd's to the repo root itself)
+#   2. ./scripts/deploy.sh          (run from anywhere -- it cd's to the repo root itself)
 #
 set -euo pipefail
 
@@ -20,7 +20,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 # ----------------------------- CONFIG ---------------------------------
-PROJECT_ID="${PROJECT_ID:-cs-poc-pjtbxc0qllmcraowi6w1wmi}"
+PROJECT_ID="${PROJECT_ID:?set PROJECT_ID to your Google Cloud project}"
 REGION="${REGION:-us-central1}"           # needs GPU quota for the chosen accelerator
 REPO="${REPO:-cpc-longmemeval}"           # Artifact Registry repo name
 BUCKET="${BUCKET:-gs://replicate}"        # created below if it doesn't exist

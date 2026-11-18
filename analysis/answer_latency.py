@@ -8,7 +8,7 @@ once from each, alternating which goes first so drift in API latency
 falls on both sides equally. Calls are sequential.
 
 Usage:
-    python -m eval.answer_latency --dataset longmemeval_s --limit 50 \
+    python -m analysis.answer_latency --dataset longmemeval_s --limit 50 \
         --compressed-log logs/eval_longmemeval_run0001_compress_cpc-mistral_b4000.jsonl \
         --out logs/answer_latency_lme.jsonl
 """
@@ -16,17 +16,16 @@ Usage:
 import argparse
 import json
 import statistics
-import sys
 import time
 from collections import defaultdict
 from datetime import datetime
 
 from google.genai import types
 
+from core.console import utf8_console
 from eval.longmemeval import CompressionSettings, build_agent, compress_question, load_items
 
-if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+utf8_console()
 
 
 def compressed_histories(path):
@@ -39,8 +38,7 @@ def compressed_histories(path):
 
 
 def to_contents(described):
-    return [types.Content(role=entry["role"], parts=[types.Part.from_text(text=entry["text"])])
-            for entry in described]
+    return [types.Content(role=entry["role"], parts=[types.Part.from_text(text=entry["text"])]) for entry in described]
 
 
 def timed_call(agent, described):
@@ -69,8 +67,9 @@ def main():
     args = parser.parse_args()
 
     compressed = compressed_histories(args.compressed_log)
-    items = [item for item in load_items(args.dataset, limit=args.limit, seed=args.seed)
-             if item["question_id"] in compressed]
+    items = [
+        item for item in load_items(args.dataset, limit=args.limit, seed=args.seed) if item["question_id"] in compressed
+    ]
     agent = build_agent()
     print(f"{len(items)} questions from {args.dataset}")
 
@@ -86,8 +85,13 @@ def main():
                     result = timed_call(agent, described)
                 except Exception as error:  # one failed call shouldn't end the run
                     result = {"error": str(error)[:300]}
-                row = {"event": "answer_latency", "dataset": args.dataset, "question_id": item["question_id"],
-                       "context": name, **result}
+                row = {
+                    "event": "answer_latency",
+                    "dataset": args.dataset,
+                    "question_id": item["question_id"],
+                    "context": name,
+                    **result,
+                }
                 rows.append(row)
                 out.write(json.dumps({"timestamp": datetime.now().isoformat(), **row}) + "\n")
                 out.flush()
@@ -98,8 +102,10 @@ def main():
         if "seconds" in row:
             groups[row["context"]].append(row)
     for name, group in groups.items():
-        print(f"{name:<11} n={len(group)} median {statistics.median(r['seconds'] for r in group):.2f}s "
-              f"median prompt tokens {statistics.median(r['prompt_tokens'] or 0 for r in group):.0f}")
+        print(
+            f"{name:<11} n={len(group)} median {statistics.median(r['seconds'] for r in group):.2f}s "
+            f"median prompt tokens {statistics.median(r['prompt_tokens'] or 0 for r in group):.0f}"
+        )
 
 
 if __name__ == "__main__":

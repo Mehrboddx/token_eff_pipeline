@@ -6,9 +6,9 @@ from tests import _fake_genai
 _fake_genai.install()
 
 from core.memory import Memory  # noqa: E402
-from core.tokenWise import CompressionResult  # noqa: E402
+from core.token_wise import CompressionResult  # noqa: E402
 from core.units import Unit  # noqa: E402
-from eval.evidence import exact_evidence_recall, recent_cutoff, haystack_entries, text_matched_evidence_recall  # noqa: E402
+from eval.evidence import exact_evidence_recall, haystack_entries, recent_cutoff, text_matched_evidence_recall  # noqa: E402
 from eval.score_cache import CachedScorer  # noqa: E402
 
 
@@ -17,12 +17,18 @@ def item_with_sessions():
         "haystack_session_ids": ["s0", "answer_s1", "s2"],
         "answer_session_ids": ["answer_s1"],
         "haystack_sessions": [
-            [{"role": "user", "content": "I like hiking in the mountains every weekend."},
-             {"role": "assistant", "content": "Hiking is a great hobby for staying fit."}],
-            [{"role": "user", "content": "My new puppy is called Biscuit and she is a beagle.", "has_answer": True},
-             {"role": "assistant", "content": "Biscuit is a lovely name for a beagle."}],
-            [{"role": "user", "content": "Can you suggest some pasta recipes for dinner tonight?"},
-             {"role": "assistant", "content": "Sure, try a simple aglio e olio with garlic."}],
+            [
+                {"role": "user", "content": "I like hiking in the mountains every weekend."},
+                {"role": "assistant", "content": "Hiking is a great hobby for staying fit."},
+            ],
+            [
+                {"role": "user", "content": "My new puppy is called Biscuit and she is a beagle.", "has_answer": True},
+                {"role": "assistant", "content": "Biscuit is a lovely name for a beagle."},
+            ],
+            [
+                {"role": "user", "content": "Can you suggest some pasta recipes for dinner tonight?"},
+                {"role": "assistant", "content": "Sure, try a simple aglio e olio with garlic."},
+            ],
         ],
     }
 
@@ -47,22 +53,29 @@ class ExactRecallTests(unittest.TestCase):
     def test_kept_when_selected(self):
         item = item_with_sessions()
         recall = exact_evidence_recall(seed(item), item, self.compression([2], cutoff=4), "compressed_history")
+        assert recall is not None
         self.assertEqual((recall["evidence_turns_kept"], recall["answer_sessions_kept"]), (1, 1))
 
     def test_missed_when_neither_selected_nor_recent(self):
         item = item_with_sessions()
         recall = exact_evidence_recall(seed(item), item, self.compression([0], cutoff=4), "compressed_history")
-        self.assertEqual((recall["evidence_turns"], recall["evidence_turns_kept"], recall["answer_sessions_kept"]), (1, 0, 0))
+        assert recall is not None
+        self.assertEqual(
+            (recall["evidence_turns"], recall["evidence_turns_kept"], recall["answer_sessions_kept"]), (1, 0, 0)
+        )
 
     def test_recent_window_counts_as_kept(self):
         item = item_with_sessions()
         recall = exact_evidence_recall(seed(item), item, self.compression([0], cutoff=2), "compressed_history")
+        assert recall is not None
         self.assertEqual(recall["evidence_turns_kept"], 1)
 
     def test_full_history_keeps_everything_and_abstractive_is_unmeasured(self):
         item = item_with_sessions()
         memory = seed(item)
-        self.assertEqual(exact_evidence_recall(memory, item, None, "full_history")["evidence_turns_kept"], 1)
+        full = exact_evidence_recall(memory, item, None, "full_history")
+        assert full is not None
+        self.assertEqual(full["evidence_turns_kept"], 1)
         abstractive = {"cutoff_index": 4, "result": CompressionResult("x", None, 1), "candidates": 1}
         self.assertIsNone(exact_evidence_recall(memory, item, abstractive, "compressed_history"))
 
@@ -81,7 +94,9 @@ class TextMatchedRecallTests(unittest.TestCase):
 
     def test_unrelated_context_misses(self):
         item = item_with_sessions()
-        recall = text_matched_evidence_recall(item, "User: I like hiking in the mountains", "compressed_history", recent_turns=2)
+        recall = text_matched_evidence_recall(
+            item, "User: I like hiking in the mountains", "compressed_history", recent_turns=2
+        )
         self.assertEqual(recall["evidence_turns_kept"], 0)
 
 

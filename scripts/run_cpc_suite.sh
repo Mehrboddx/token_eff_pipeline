@@ -13,9 +13,9 @@
 #
 # Usage:
 #   export GOOGLE_CLOUD_PROJECT=<project>        # steps 4-5 call Gemini
-#   bash eval/run_cpc_suite.sh
-#   PRESET=llama BUDGET=2000 bash eval/run_cpc_suite.sh
-#   SELECTION="--window 1 --pair-turns --mmr 1 --mmr-similarity semantic" SKIP="1 2 3" bash eval/run_cpc_suite.sh
+#   bash scripts/run_cpc_suite.sh
+#   PRESET=llama BUDGET=2000 bash scripts/run_cpc_suite.sh
+#   SELECTION="--window 1 --pair-turns --mmr 1 --mmr-similarity semantic" SKIP="1 2 3" bash scripts/run_cpc_suite.sh
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -44,7 +44,7 @@ need_project() {
 
 if ! skipped 1; then
   echo "== 1. Bidirectional sanity check ($PRESET)"
-  python -m eval.check_bidirectional --cpc-preset "$PRESET" --cpc-max-seq-length "$SEQ" \
+  python -m analysis.check_bidirectional --cpc-preset "$PRESET" --cpc-max-seq-length "$SEQ" \
     --token-budget "$BUDGET" | tee "$OUT/1_check_bidirectional.txt"
 fi
 

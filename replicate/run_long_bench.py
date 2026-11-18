@@ -21,8 +21,6 @@ Example (see README.md for the full gcloud submission command):
 
 import argparse
 import os
-import shutil
-import tempfile
 from pathlib import Path
 
 from datasets import load_dataset
@@ -31,10 +29,27 @@ from dotenv import load_dotenv
 load_dotenv()
 
 ALL_SUBSETS = [
-    "narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh", "hotpotqa",
-    "2wikimqa", "musique", "dureader", "gov_report", "qmsum", "multi_news",
-    "vcsum", "trec", "triviaqa", "samsum", "lsht", "passage_count",
-    "passage_retrieval_en", "passage_retrieval_zh", "lcc", "repobench-p",
+    "narrativeqa",
+    "qasper",
+    "multifieldqa_en",
+    "multifieldqa_zh",
+    "hotpotqa",
+    "2wikimqa",
+    "musique",
+    "dureader",
+    "gov_report",
+    "qmsum",
+    "multi_news",
+    "vcsum",
+    "trec",
+    "triviaqa",
+    "samsum",
+    "lsht",
+    "passage_count",
+    "passage_retrieval_en",
+    "passage_retrieval_zh",
+    "lcc",
+    "repobench-p",
 ]
 
 
@@ -59,15 +74,15 @@ def parse_args():
         "--output_gcs_uri",
         default=os.environ.get("OUTPUT_GCS_URI", ""),
         help="gs://bucket/prefix to upload each .txt to. If omitted, output "
-             "only goes to --output_dir (useful for local testing).",
+        "only goes to --output_dir (useful for local testing).",
     )
     p.add_argument(
         "--output_dir",
         default=None,
         help="Local staging directory (also the final location if "
-             "--output_gcs_uri is not set). Defaults to 'output' for "
-             "--compressor=cpc and 'output_gemini_compressor' for "
-             "--compressor=gemini, so the two don't overwrite each other.",
+        "--output_gcs_uri is not set). Defaults to 'output' for "
+        "--compressor=cpc and 'output_gemini_compressor' for "
+        "--compressor=gemini, so the two don't overwrite each other.",
     )
     p.add_argument(
         "--target_tokens",
@@ -91,16 +106,16 @@ def parse_args():
         type=int,
         default=6144,
         help="Per-chunk token budget for the compressor's forward pass. Lower "
-             "this on GPUs with limited VRAM (more, smaller chunks; slower "
-             "but still correct). Only applies to --compressor=cpc.",
+        "this on GPUs with limited VRAM (more, smaller chunks; slower "
+        "but still correct). Only applies to --compressor=cpc.",
     )
     p.add_argument(
         "--compressor",
         choices=["cpc", "gemini"],
         default=os.environ.get("COMPRESSOR", "cpc"),
         help="'cpc' runs the local CPC embedding model (default); 'gemini' "
-             "calls a hosted Gemini model over Vertex AI to do the "
-             "compression instead.",
+        "calls a hosted Gemini model over Vertex AI to do the "
+        "compression instead.",
     )
     p.add_argument(
         "--gemini_model",
@@ -135,8 +150,7 @@ def build_compressor(args):
 
 def main():
     args = parse_args()
-    print(f"Compressor: {args.compressor}"
-          + (f" ({args.gemini_model})" if args.compressor == "gemini" else ""))
+    print(f"Compressor: {args.compressor}" + (f" ({args.gemini_model})" if args.compressor == "gemini" else ""))
     subsets = [s.strip() for s in args.subsets.split(",") if s.strip()]
 
     output_dir = Path(args.output_dir)
@@ -150,16 +164,14 @@ def main():
         from google.cloud import storage
 
         assert args.output_gcs_uri.startswith("gs://"), "--output_gcs_uri must start with gs://"
-        bucket_name, _, blob_prefix = args.output_gcs_uri[len("gs://"):].partition("/")
+        bucket_name, _, blob_prefix = args.output_gcs_uri[len("gs://") :].partition("/")
         blob_prefix = blob_prefix.rstrip("/")
         client = storage.Client()
         bucket = client.bucket(bucket_name)
         # List what's already there once, up front, so resuming a preempted
         # job doesn't re-run (and re-pay GPU time for) finished examples.
         print(f"Checking existing objects under gs://{bucket_name}/{blob_prefix} ...")
-        existing_blobs = {
-            b.name.rsplit("/", 1)[-1] for b in client.list_blobs(bucket_name, prefix=blob_prefix)
-        }
+        existing_blobs = {b.name.rsplit("/", 1)[-1] for b in client.list_blobs(bucket_name, prefix=blob_prefix)}
         print(f"  found {len(existing_blobs)} existing output files.")
 
     compressor = build_compressor(args)
@@ -190,8 +202,7 @@ def main():
                 blob_name = f"{blob_prefix}/{filename}" if blob_prefix else filename
                 bucket.blob(blob_name).upload_from_filename(str(out_path))
 
-            print(f"[{subset}_e {i + 1}/{len(dataset)}] wrote {filename}"
-                  + (" -> GCS" if use_gcs else ""))
+            print(f"[{subset}_e {i + 1}/{len(dataset)}] wrote {filename}" + (" -> GCS" if use_gcs else ""))
 
     print("Done.")
 

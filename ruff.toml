@@ -1,0 +1,8 @@
+line-length = 120
+target-version = "py311"
+extend-exclude = ["logs", "eval/data", "data/raw"]
+
+[lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
+# zip() inputs here are equal-length by construction; strict=True would only add noise.
+ignore = ["B905"]

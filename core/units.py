@@ -1,6 +1,7 @@
 import re
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, List, Optional
+from typing import Any
 
 ROLE_LABELS = {"user": "User", "model": "Assistant", "tool": "Tool"}
 
@@ -17,7 +18,7 @@ class Unit:
     role: str
     entry_index: int  # the Memory history entry (one turn) it came from
     session: Any = None  # never rendered verbatim: ids can leak labels
-    time: Optional[str] = None  # human-readable time label for the header
+    time: str | None = None  # human-readable time label for the header
     tokens: int = 0
     meta: dict = field(default_factory=dict)
 
@@ -30,7 +31,7 @@ def prepare_units(
     entries: Iterable[dict],
     count_tokens: Callable[[str], int],
     min_words: int = 4,
-) -> List[Unit]:
+) -> list[Unit]:
     """Memory sentence entries -> scorable units.
 
     Fragments under `min_words` words (markdown debris like "**", "Thanks!",
@@ -49,7 +50,7 @@ def prepare_units(
             order.append(index)
         by_entry[index].append(entry)
 
-    units: List[Unit] = []
+    units: list[Unit] = []
     seen: set[tuple[str, str]] = set()
     for index in order:
         group = by_entry[index]
@@ -102,17 +103,17 @@ def role_label(unit: Unit) -> str:
     return f"{speaker or ROLE_LABELS.get(unit.role, unit.role)}:"
 
 
-def has_sessions(units: List[Unit]) -> bool:
+def has_sessions(units: Sequence[Unit]) -> bool:
     return any(unit.session is not None for unit in units)
 
 
-def render_flat(units: List[Unit]) -> str:
+def render_flat(units: list[Unit]) -> str:
     """Selected units joined in their original order with nothing else,
     as the CPC paper returns them (the layout ablation)."""
     return " ".join(unit.text for unit in sorted(units, key=lambda unit: unit.id))
 
 
-def render_units(units: List[Unit]) -> str:
+def render_units(units: list[Unit]) -> str:
     """Selected units, chronologically, grouped under one header per
     session and one role label per turn. " … " marks sentences skipped
     inside a turn so the reader knows the excerpt isn't contiguous."""

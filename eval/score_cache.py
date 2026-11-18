@@ -1,7 +1,8 @@
 import hashlib
 import json
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Callable, Dict, List, Sequence
+from typing import Any
 
 import numpy as np
 
@@ -16,9 +17,9 @@ class CachedScorer:
     first miss: re-running selection ablations over already-scored
     questions never loads the model at all."""
 
-    def __init__(self, factory: Callable[[], object], cache_dir: str, key: str, embedding_top_k: int = 600) -> None:
+    def __init__(self, factory: Callable[[], Any], cache_dir: str, key: str, embedding_top_k: int = 600) -> None:
         self._factory = factory
-        self._scorer = None
+        self._scorer: Any = None
         self.directory = Path(cache_dir) / key
         self.directory.mkdir(parents=True, exist_ok=True)
         # Full per-sentence embeddings would be ~40 MB per question for
@@ -38,7 +39,7 @@ class CachedScorer:
         payload = "\x1e".join(f"{u.role}\x1f{u.session}\x1f{u.entry_index}\x1f{u.text}" for u in units)
         return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
-    def score_units(self, units: Sequence[Unit], queries: Sequence[str]) -> List[List[float]]:
+    def score_units(self, units: Sequence[Unit], queries: Sequence[str]) -> list[list[float]]:
         path = self.directory / f"{self._digest(units)}.json"
         data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
         missing = [query for query in dict.fromkeys(queries) if query not in data]
@@ -51,13 +52,13 @@ class CachedScorer:
             self.hits += 1
         return [data[query] for query in queries]
 
-    def unit_embeddings(self, units: Sequence[Unit], ids: Sequence[int]) -> Dict[int, np.ndarray]:
+    def unit_embeddings(self, units: Sequence[Unit], ids: Sequence[int]) -> dict[int, np.ndarray]:
         """Embeddings for `ids`, from disk when stored. On a miss, embeds
         once and stores the requested ids plus the top-k units by best
         cached score, so later selection configs usually hit."""
         digest = self._digest(units)
         path = self.directory / f"{digest}.emb.npz"
-        stored: Dict[int, np.ndarray] = {}
+        stored: dict[int, np.ndarray] = {}
         if path.exists():
             with np.load(path) as archive:
                 stored = dict(zip(archive["ids"].tolist(), archive["vectors"].astype(np.float32)))
@@ -73,6 +74,9 @@ class CachedScorer:
         fresh = self._scorer_instance().unit_embeddings(units, sorted(keep - set(stored)))
         stored.update(fresh)
         ordered = sorted(stored)
-        np.savez(path, ids=np.array(ordered, dtype=np.int32),
-                 vectors=np.stack([stored[index] for index in ordered]).astype(np.float16))
+        np.savez(
+            path,
+            ids=np.array(ordered, dtype=np.int32),
+            vectors=np.stack([stored[index] for index in ordered]).astype(np.float16),
+        )
         return {index: stored[index] for index in ids}

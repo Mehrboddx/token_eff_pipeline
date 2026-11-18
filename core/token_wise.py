@@ -1,15 +1,16 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any
 
 from core.scorers import BM25Scorer, LexicalScorer
-from core.selection import SelectionConfig, fuse_scores, mmr_pool_ids, select_units
+from core.selection import SelectionConfig, fuse_scores, mmr_pool_ids, select_units, zscore
 from core.units import Unit, render_flat, render_units
 
 
 @dataclass
 class CompressionResult:
     text: str
-    selected: Optional[List[Unit]]  # None for abstractive compressors
+    selected: list[Unit] | None  # None for abstractive compressors
     tokens: int
 
 
@@ -26,7 +27,7 @@ class TokenWise:
     Budgets are always counted in cl100k (tiktoken) tokens, whatever the
     scorer's own tokenizer, so every compressor is held to the same unit."""
 
-    PRETRAINED_PRESETS: Dict[str, Dict[str, str]] = {
+    PRETRAINED_PRESETS: dict[str, dict[str, str]] = {
         "mistral": {
             "tokenizer_name_or_path": "deadcode99/cpc-1.0-mistral-7b-tokenizer",
             "lora_name_or_path": "deadcode99/cpc-1.0-mistral-7b-ds-v5-iter66-lora-bidirectional-attn",
@@ -37,11 +38,13 @@ class TokenWise:
         },
     }
 
-    def __init__(self, model: Any = None, selection: Optional[SelectionConfig] = None) -> None:
+    def __init__(self, model: Any = None, selection: SelectionConfig | None = None) -> None:
         import tiktoken
 
         self.model = model
         self.selection = selection or SelectionConfig()
+        self.secondary: Any = None  # optional second scorer fused in (SelectionConfig.provence_weight)
+        self.entities: Any = None  # optional core.entities.EntityIndex (SelectionConfig.entity_weight)
         self._encoding = tiktoken.encoding_for_model("gpt-4")
         self._lexical = LexicalScorer()
         self._bm25 = BM25Scorer()
@@ -73,11 +76,20 @@ class TokenWise:
             return CompressionResult(text=text, selected=None, tokens=self.count_tokens(text))
 
         queries = [query, *dict.fromkeys(q for q in extra_queries if q and q != query)]
-        scorer = self.model if self.model is not None else self._lexical
+        scorer: Any = self.model if self.model is not None else self._lexical
         primary = scorer.score_units(units, queries)
         lexical = self._bm25.score_units(units, queries) if self.selection.lexical_weight > 0 else None
+        secondary = (
+            self.secondary.score_units(units, queries)
+            if self.secondary is not None and self.selection.provence_weight > 0
+            else None
+        )
 
-        scores = fuse_scores(primary, self.selection, lexical)
+        scores = fuse_scores(primary, self.selection, lexical, secondary)
+        if self.entities is not None and self.selection.entity_weight > 0:
+            weight = self.selection.entity_weight
+            keyed = zscore(self.entities.scores(units, query, scores))
+            scores = [(1 - weight) * a + weight * b for a, b in zip(scores, keyed)]
         embeddings = None
         if self.selection.mmr_lambda > 0 and self.selection.mmr_similarity == "semantic":
             if not hasattr(scorer, "unit_embeddings"):

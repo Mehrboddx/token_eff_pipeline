@@ -14,20 +14,21 @@ Model loading is timed once per method. Run with nothing else on the
 GPU; the first --warmup questions of each method are run but not logged.
 
 Usage (on the GPU machine):
-    python -m eval.latency --dataset longmemeval_s --limit 50 --out logs/latency_lme.jsonl
-    python -m eval.latency --dataset locomo --limit 30 --out logs/latency_locomo.jsonl
+    python -m analysis.latency --dataset longmemeval_s --limit 50 --out logs/latency_lme.jsonl
+    python -m analysis.latency --dataset locomo --limit 30 --out logs/latency_locomo.jsonl
 """
 
 import argparse
 import json
 import statistics
-import sys
 import time
 from collections import defaultdict
 from datetime import datetime
+from functools import partial
 
 import tiktoken
 
+from core.console import utf8_console
 from core.selection import SelectionConfig
 from eval.longmemeval import (
     CompressionSettings,
@@ -37,13 +38,19 @@ from eval.longmemeval import (
     seed_memory_from_haystack,
 )
 
-if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+utf8_console()
 
 # name -> (build_tokenwise kwargs, CompressionSettings kwargs, incremental?)
 METHODS = {
     "ours-mistral": ({"compressor": "cpc", "cpc_preset": "mistral"}, {}, True),
     "ours-llama": ({"compressor": "cpc", "cpc_preset": "llama"}, {}, True),
+    # CPC + Provence score fusion (--fuse-provence 0.25): Provence re-scores the
+    # whole history on every call (no per-chunk cache), so incremental pays for it.
+    "ours-mistral-fuse": (
+        {"compressor": "cpc", "cpc_preset": "mistral", "selection": SelectionConfig(provence_weight=0.25)},
+        {},
+        True,
+    ),
     "paper-mistral": ({"compressor": "cpc", "cpc_preset": "mistral"}, {"paper": True}, False),
     "provence": ({"compressor": "provence", "provence": {}}, {}, False),
     "dycp": ({"compressor": "dycp", "dycp": {}}, {}, False),
@@ -58,6 +65,7 @@ ENCODING = tiktoken.get_encoding("cl100k_base")
 def _torch():
     try:
         import torch
+
         return torch if torch.cuda.is_available() else None
     except ImportError:
         return None
@@ -83,7 +91,7 @@ def cpc_cache(tokenwise):
 def clear_cache(tokenwise):
     inner = getattr(tokenwise.model, "_compressor", None)
     cache = cpc_cache(tokenwise)
-    if cache is not None:
+    if inner is not None and cache is not None:
         inner.embedding_cache = type(cache)(cache.max_bytes)
 
 
@@ -116,18 +124,34 @@ def measure(item, tokenwise, settings, incremental):
 
     clear_cache(tokenwise)
     (_, _, _, info), seconds = timed(lambda: compress_question(item, tokenwise, settings, seeded_memory=memory))
-    rows = [{**base, "mode": "cold", "seconds": round(seconds, 4),
-             "compressed_tokens": info.get("compressed_tokens"), "units": info.get("candidate_units")}]
+    rows = [
+        {
+            **base,
+            "mode": "cold",
+            "seconds": round(seconds, 4),
+            "compressed_tokens": info.get("compressed_tokens"),
+            "units": info.get("candidate_units"),
+        }
+    ]
 
     if incremental and len(item["haystack_sessions"]) > 1:
         clear_cache(tokenwise)
         compress_question(without_last_session(item), tokenwise, settings)
         cache = cpc_cache(tokenwise)
+        assert cache is not None  # incremental timing is CPC-only
         hits, misses = cache.hits, cache.misses
         (_, _, _, info), seconds = timed(lambda: compress_question(item, tokenwise, settings, seeded_memory=memory))
-        rows.append({**base, "mode": "incremental", "seconds": round(seconds, 4),
-                     "compressed_tokens": info.get("compressed_tokens"), "units": info.get("candidate_units"),
-                     "chunks_reused": cache.hits - hits, "chunks_encoded": cache.misses - misses})
+        rows.append(
+            {
+                **base,
+                "mode": "incremental",
+                "seconds": round(seconds, 4),
+                "compressed_tokens": info.get("compressed_tokens"),
+                "units": info.get("candidate_units"),
+                "chunks_reused": cache.hits - hits,
+                "chunks_encoded": cache.misses - misses,
+            }
+        )
     return rows
 
 
@@ -161,6 +185,7 @@ def main():
 
     rows = []
     with open(args.out, "a", encoding="utf-8") as out:
+
         def write(record):
             out.write(json.dumps({"timestamp": datetime.now().isoformat(), **record}) + "\n")
             out.flush()
@@ -168,27 +193,43 @@ def main():
         for method in args.methods:
             build_kwargs, settings_kwargs, incremental = METHODS[method]
             settings = CompressionSettings(token_budget=args.token_budget, **settings_kwargs)
-            tokenwise, load_seconds = timed(lambda: build_tokenwise(selection=SelectionConfig(), **build_kwargs))
+            build_kwargs = {"selection": SelectionConfig(), **build_kwargs}
+            tokenwise, load_seconds = timed(partial(build_tokenwise, **build_kwargs))
             if torch:
                 torch.cuda.reset_peak_memory_stats()
-            for item in items[:args.warmup]:
+            for item in items[: args.warmup]:
                 measure(item, tokenwise, settings, incremental)
 
             for index, item in enumerate(items, 1):
                 for row in measure(item, tokenwise, settings, incremental):
-                    row = {"event": "latency", "dataset": args.dataset, "method": method, "gpu": gpu,
-                           "token_budget": args.token_budget, **row}
+                    row = {
+                        "event": "latency",
+                        "dataset": args.dataset,
+                        "method": method,
+                        "gpu": gpu,
+                        "token_budget": args.token_budget,
+                        **row,
+                    }
                     rows.append(row)
                     write(row)
                 print(f"{method} {index}/{len(items)} {rows[-1]['mode']} {rows[-1]['seconds']:.2f}s", flush=True)
 
             peak = torch.cuda.max_memory_allocated() / 2**30 if torch else None
-            write({"event": "method_done", "dataset": args.dataset, "method": method, "gpu": gpu,
-                   "load_seconds": round(load_seconds, 2), "peak_gpu_gib": round(peak, 2) if peak else None})
+            write(
+                {
+                    "event": "method_done",
+                    "dataset": args.dataset,
+                    "method": method,
+                    "gpu": gpu,
+                    "load_seconds": round(load_seconds, 2),
+                    "peak_gpu_gib": round(peak, 2) if peak else None,
+                }
+            )
             print(f"{method}: load {load_seconds:.1f}s, peak GPU memory {peak or 0:.1f} GiB")
             del tokenwise
             if torch:
                 import gc
+
                 gc.collect()
                 torch.cuda.empty_cache()
 

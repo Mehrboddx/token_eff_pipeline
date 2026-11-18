@@ -104,7 +104,11 @@ def text_matched_evidence_recall(item, compressed_context, mode, recent_turns, s
             return bool(words) and f" {' '.join(words)} " in f" {context} "
         return not _shingles(words, shingle_size).isdisjoint(context_shingles)
 
-    kept_turns = {index for index in range(len(entries)) if (entries[index][3] or entries[index][0] in answer_sessions) and kept(index)}
+    kept_turns = {
+        index
+        for index in range(len(entries))
+        if (entries[index][3] or entries[index][0] in answer_sessions) and kept(index)
+    }
     kept_sessions = {entries[index][0] for index in kept_turns}
     return _counts(
         sum(1 for index in evidence if index in kept_turns),
@@ -130,15 +134,18 @@ def summarize_recall(name, rows, verbose=True):
             "n": len(subset),
             "turn_recall": (
                 sum(e["evidence_turns_kept"] / e["evidence_turns"] for e in with_turns) / len(with_turns)
-                if with_turns else None
+                if with_turns
+                else None
             ),
             "all_evidence_kept": (
                 sum(e["evidence_turns_kept"] == e["evidence_turns"] for e in with_turns) / len(with_turns)
-                if with_turns else None
+                if with_turns
+                else None
             ),
             "session_recall": (
                 sum(e["answer_sessions_kept"] / e["answer_sessions"] for e in with_sessions) / len(with_sessions)
-                if with_sessions else None
+                if with_sessions
+                else None
             ),
             "mean_tokens": sum(tokens) / len(tokens) if tokens else None,
         }
@@ -159,6 +166,8 @@ def summarize_recall(name, rows, verbose=True):
     print(f"\n{name} -- evidence recall (n={overall['n']})")
     print(f"  {'':28} {'turn':>6} {'all-ev':>6} {'sess':>6} {'tokens':>6}")
     for label, s in [("overall", overall), *summary["by_type"].items()]:
-        print(f"  {label:28} {fmt(s['turn_recall'])} {fmt(s['all_evidence_kept'])} "
-              f"{fmt(s['session_recall'])} {fmt(s['mean_tokens'], pct=False)}")
+        print(
+            f"  {label:28} {fmt(s['turn_recall'])} {fmt(s['all_evidence_kept'])} "
+            f"{fmt(s['session_recall'])} {fmt(s['mean_tokens'], pct=False)}"
+        )
     return summary

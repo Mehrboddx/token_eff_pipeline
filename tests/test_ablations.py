@@ -4,9 +4,9 @@ from tests import _fake_genai
 
 _fake_genai.install()
 
-from core.cpcCompressor import CPCCompressor, cpc_cache_key  # noqa: E402
+from core.cpc_compressor import CPCCompressor, cpc_cache_key  # noqa: E402
 from core.selection import SelectionConfig, select_units  # noqa: E402
-from core.tokenWise import TokenWise  # noqa: E402
+from core.token_wise import TokenWise  # noqa: E402
 from core.units import Unit, render_flat  # noqa: E402
 from eval.longmemeval import (  # noqa: E402
     CompressionSettings,
@@ -42,15 +42,18 @@ class LengthScorer:
 
 class AblationTests(unittest.TestCase):
     def test_flat_output_is_plain_text_and_pays_no_layout_tokens(self):
-        self.assertEqual(render_flat(list(reversed(units()))),
-                         "I bought a smoker today. Nice, enjoy the barbecue! Try brisket in your new smoker.")
+        self.assertEqual(
+            render_flat(list(reversed(units()))),
+            "I bought a smoker today. Nice, enjoy the barbecue! Try brisket in your new smoker.",
+        )
         count = lambda text: len(text.split())  # noqa: E731
         budget = sum(count(unit.text) for unit in units())
         self.assertEqual(len(select_units(units(), [3, 2, 1], budget, count, SelectionConfig(flat_output=True))), 3)
         self.assertLess(len(select_units(units(), [3, 2, 1], budget, count, SelectionConfig())), 3)
 
         result = TokenWise(model=LengthScorer(), selection=SelectionConfig(flat_output=True)).compress_units(
-            "q", 4000, units())
+            "q", 4000, units()
+        )
         self.assertNotIn("[Earlier session", result.text)
         self.assertNotIn("User:", result.text)
 
@@ -83,23 +86,43 @@ class AblationTests(unittest.TestCase):
                 seen["texts"] = [unit.text for unit in units]
                 return super().score_units(units, queries)
 
-        settings = CompressionSettings(sentence_threshold=0, token_budget=4000, recent_turns=1,
-                                       ablate=("date-in-text", "dated-query"))
+        settings = CompressionSettings(
+            sentence_threshold=0, token_budget=4000, recent_turns=1, ablate=("date-in-text", "dated-query")
+        )
         compress_question(item(), TokenWise(model=Recording()), settings)
         self.assertTrue(seen["queries"][0].startswith("(Today's date is"))
         self.assertTrue(any("days before" in text for text in seen["texts"]))
 
-        self.assertEqual(run_tag("compress", {"compressor": "cpc", "cpc_preset": "mistral", "token_budget": 4000,
-                                              "ablate": ["date-in-text", "flat-output"]}),
-                         "compress_cpc-mistral_b4000_abl-date-in-text_abl-flat-output")
+        self.assertEqual(
+            run_tag(
+                "compress",
+                {
+                    "compressor": "cpc",
+                    "cpc_preset": "mistral",
+                    "token_budget": 4000,
+                    "ablate": ["date-in-text", "flat-output"],
+                },
+            ),
+            "compress_cpc-mistral_b4000_abl-date-in-text_abl-flat-output",
+        )
 
     def test_paper_turn_dates_put_the_date_on_every_turn(self):
         lines = paper_transcript(seed_memory_from_haystack(item()), turn_dates=True).splitlines()
         self.assertEqual(lines[0], "[10 days before this question] User: I bought a smoker today. It was on sale.")
         self.assertEqual(len(lines), 4)
-        self.assertEqual(run_tag("compress", {"compressor": "cpc", "cpc_preset": "mistral", "token_budget": 4000,
-                                              "paper_cpc": True, "paper_dates": "turn"}),
-                         "compress_cpc-mistral_b4000_paper-turndates")
+        self.assertEqual(
+            run_tag(
+                "compress",
+                {
+                    "compressor": "cpc",
+                    "cpc_preset": "mistral",
+                    "token_budget": 4000,
+                    "paper_cpc": True,
+                    "paper_dates": "turn",
+                },
+            ),
+            "compress_cpc-mistral_b4000_paper-turndates",
+        )
 
 
 if __name__ == "__main__":

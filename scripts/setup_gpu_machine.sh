@@ -8,7 +8,7 @@
 # Usage:
 #   git clone https://github.com/Mehrboddx/token_eff_pipeline.git
 #   cd token_eff_pipeline
-#   bash eval/setup_gpu_machine.sh
+#   bash scripts/setup_gpu_machine.sh
 #
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -62,8 +62,8 @@ pip install --upgrade pip
 echo "-- Installing torch (cu128 wheels, same as Dockerfile.eval)..."
 pip install torch --index-url https://download.pytorch.org/whl/cu128
 
-echo "-- Installing eval/requirements.txt..."
-pip install -r eval/requirements.txt
+echo "-- Installing requirements.txt..."
+pip install -r requirements.txt
 
 echo
 echo "== Setup done. =="
@@ -84,8 +84,8 @@ echo "  export GOOGLE_CLOUD_PROJECT=<your-project-id>"
 echo
 echo "Then check bidirectional attention and run the full CPC suite:"
 echo "  source .venv/bin/activate"
-echo "  python -m eval.check_bidirectional --cpc-preset mistral"
-echo "  bash eval/run_cpc_suite.sh        (see the top of that file for its settings)"
+echo "  python -m analysis.check_bidirectional --cpc-preset mistral"
+echo "  bash scripts/run_cpc_suite.sh        (see the top of that file for its settings)"
 echo
 echo "Safe to Ctrl+C anytime -- resume with:"
 echo "  python -m eval.longmemeval --resume <run_number>   (printed at the start of the run)"

@@ -12,8 +12,10 @@ def calculator(expression: str) -> str:
         return "error: expression contains unsupported characters"
     return str(eval(expression))
 
+
 def exit_pipeline() -> str:
     raise PipelineExit()
+
 
 # Every tool the agent can use, name -> Tool instance.
 TOOLS = {tool.name: tool for tool in [Tool(calculator), Tool(exit_pipeline)]}

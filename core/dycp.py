@@ -20,14 +20,15 @@ Details the paper leaves open, and what is done here:
 """
 
 import math
-from typing import Callable, List, Optional, Sequence, Tuple
+from collections.abc import Callable, Sequence
+from typing import Any
 
 from core.units import Unit
 
 DEFAULT_RETRIEVER = "facebook/contriever-msmarco"
 
 
-def kadane_dial(scores: Sequence[float], tau: float = 0.6, theta: float = 1.0) -> List[Tuple[int, int]]:
+def kadane_dial(scores: Sequence[float], tau: float = 0.6, theta: float = 1.0) -> list[tuple[int, int]]:
     """Contiguous (start, end) index spans, inclusive, best first."""
     n = len(scores)
     if n == 0:
@@ -36,7 +37,7 @@ def kadane_dial(scores: Sequence[float], tau: float = 0.6, theta: float = 1.0) -
     std = math.sqrt(sum((s - mean) ** 2 for s in scores) / (n - 1)) if n > 1 else 0.0
     gains = [((s - mean) / std if std > 1e-12 else 0.0) - tau for s in scores]
 
-    spans: List[Tuple[int, int]] = []
+    spans: list[tuple[int, int]] = []
     while True:
         best, best_span = -math.inf, None
         running, start = -math.inf, 0
@@ -60,10 +61,10 @@ def kadane_dial(scores: Sequence[float], tau: float = 0.6, theta: float = 1.0) -
     return spans
 
 
-def group_turns(units: Sequence[Unit]) -> List[List[int]]:
+def group_turns(units: Sequence[Unit]) -> list[list[int]]:
     """Unit ids grouped into DyCP turns: a user message plus every entry
     after it (assistant reply, tool results) until the next user message."""
-    turns: List[List[int]] = []
+    turns: list[list[int]] = []
     current_entry = None
     for unit in sorted(units, key=lambda unit: unit.id):
         if unit.entry_index != current_entry:
@@ -77,8 +78,13 @@ def group_turns(units: Sequence[Unit]) -> List[List[int]]:
 class ContrieverEncoder:
     """Contriever-style bi-encoder: mean-pooled last hidden states."""
 
-    def __init__(self, model_name: str = DEFAULT_RETRIEVER, device: Optional[str] = None,
-                 max_length: int = 512, batch_size: int = 64) -> None:
+    def __init__(
+        self,
+        model_name: str = DEFAULT_RETRIEVER,
+        device: str | None = None,
+        max_length: int = 512,
+        batch_size: int = 64,
+    ) -> None:
         import torch
         from transformers import AutoModel, AutoTokenizer
 
@@ -89,13 +95,18 @@ class ContrieverEncoder:
         self.max_length = max_length
         self.batch_size = batch_size
 
-    def encode(self, texts: Sequence[str]) -> List[List[float]]:
+    def encode(self, texts: Sequence[str]) -> list[list[float]]:
         torch = self._torch
-        vectors: List[List[float]] = []
+        vectors: list[list[float]] = []
         with torch.no_grad():
             for start in range(0, len(texts), self.batch_size):
-                batch = self.tokenizer(list(texts[start:start + self.batch_size]), padding=True, truncation=True,
-                                       max_length=self.max_length, return_tensors="pt").to(self.device)
+                batch = self.tokenizer(
+                    list(texts[start : start + self.batch_size]),
+                    padding=True,
+                    truncation=True,
+                    max_length=self.max_length,
+                    return_tensors="pt",
+                ).to(self.device)
                 hidden = self.model(**batch).last_hidden_state
                 mask = batch["attention_mask"].unsqueeze(-1).to(hidden.dtype)
                 pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)
@@ -107,20 +118,25 @@ class DyCPCompressor:
     """Selects whole turns with KadaneDial. TokenWise calls `select_units`
     instead of scoring sentences and filling a budget."""
 
-    def __init__(self, retriever: str = DEFAULT_RETRIEVER, tau: float = 0.6, theta: float = 1.0,
-                 encoder_factory: Optional[Callable[[], object]] = None) -> None:
+    def __init__(
+        self,
+        retriever: str = DEFAULT_RETRIEVER,
+        tau: float = 0.6,
+        theta: float = 1.0,
+        encoder_factory: Callable[[], Any] | None = None,
+    ) -> None:
         self.retriever = retriever
         self.tau = tau
         self.theta = theta
         self._encoder_factory = encoder_factory or (lambda: ContrieverEncoder(retriever))
-        self._encoder = None
+        self._encoder: Any = None
 
-    def _encode(self, texts: Sequence[str]) -> List[List[float]]:
+    def _encode(self, texts: Sequence[str]) -> list[list[float]]:
         if self._encoder is None:
             self._encoder = self._encoder_factory()
         return self._encoder.encode(texts)
 
-    def select_units(self, units: Sequence[Unit], query: str) -> List[int]:
+    def select_units(self, units: Sequence[Unit], query: str) -> list[int]:
         turns = group_turns(units)
         if not turns:
             return []
@@ -129,6 +145,10 @@ class DyCPCompressor:
         vectors = self._encode([query, *texts])
         query_vector, turn_vectors = vectors[0], vectors[1:]
         scores = [sum(a * b for a, b in zip(query_vector, vector)) for vector in turn_vectors]
-        selected = [index for start, end in kadane_dial(scores, self.tau, self.theta)
-                    for turn in turns[start:end + 1] for index in turn]
+        selected = [
+            index
+            for start, end in kadane_dial(scores, self.tau, self.theta)
+            for turn in turns[start : end + 1]
+            for index in turn
+        ]
         return sorted(selected)

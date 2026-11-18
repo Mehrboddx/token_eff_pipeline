@@ -74,7 +74,7 @@ from transformers import AutoConfig, AutoModel, AutoTokenizer
 @dataclass
 class ScoredSentence:
     text: str
-    start: int          # char offset in original context
+    start: int  # char offset in original context
     end: int
     token_count: int
     score: float
@@ -125,7 +125,7 @@ class CPCCompressor:
         dtype: torch.dtype = torch.bfloat16,
         max_seq_length: int = 6144,  # matches cpc-1.0-llama.json
         attn_implementation: str = "sdpa",  # avoids eager attention materializing
-                                             # a full (seq_len x seq_len x heads) matrix
+        # a full (seq_len x seq_len x heads) matrix
         chunk_safety_margin: int = 16,  # tokens reserved per chunk for special tokens
         embedding_cache_bytes: int = 512 * 1024 * 1024,
         # "bidirectional" is what the CPC LoRA was trained with; "causal"
@@ -238,9 +238,7 @@ class CPCCompressor:
             pieces.append((piece_text, start + local_start, start + local_end))
         return pieces
 
-    def _expand_oversized(
-        self, sentences: list[tuple[str, int, int]], budget: int
-    ) -> list[tuple[str, int, int]]:
+    def _expand_oversized(self, sentences: list[tuple[str, int, int]], budget: int) -> list[tuple[str, int, int]]:
         """Replace any sentence longer than `budget` tokens with its split pieces."""
         expanded = []
         for sent_text, start, end in sentences:
@@ -373,11 +371,7 @@ class CPCCompressor:
         char_end: int,
     ) -> torch.Tensor | None:
         """Average-pool token embeddings whose char span overlaps [char_start, char_end)."""
-        idxs = [
-            i
-            for i, (s, e) in enumerate(offset_mapping)
-            if e > char_start and s < char_end and (s, e) != (0, 0)
-        ]
+        idxs = [i for i, (s, e) in enumerate(offset_mapping) if e > char_start and s < char_end and (s, e) != (0, 0)]
         if not idxs:
             return None
         pooled = token_embeddings[idxs].mean(dim=0)
@@ -515,9 +509,7 @@ class CPCCompressor:
 
         # one forward pass over the question alone
         question_token_embeddings, question_offsets = self._embed_with_spans(question)
-        question_embedding = self._span_average(
-            question_token_embeddings, question_offsets, 0, len(question)
-        )
+        question_embedding = self._span_average(question_token_embeddings, question_offsets, 0, len(question))
         if question_embedding is None:
             raise ValueError("Could not embed question (empty after tokenization?).")
 
@@ -541,17 +533,15 @@ class CPCCompressor:
                 rate = elapsed / chunk_index
                 remaining = rate * (len(chunks) - chunk_index)
                 print(
-                    f"  chunk {chunk_index}/{len(chunks)} "
-                    f"({elapsed:.0f}s elapsed, ~{remaining:.0f}s remaining)",
-                    file=sys.stderr, flush=True,
+                    f"  chunk {chunk_index}/{len(chunks)} ({elapsed:.0f}s elapsed, ~{remaining:.0f}s remaining)",
+                    file=sys.stderr,
+                    flush=True,
                 )
 
             for sent_text, start, end in chunk_sentences:
                 local_start = start - chunk_start
                 local_end = end - chunk_start
-                sent_embedding = self._span_average(
-                    chunk_token_embeddings, chunk_offsets, local_start, local_end
-                )
+                sent_embedding = self._span_average(chunk_token_embeddings, chunk_offsets, local_start, local_end)
                 if sent_embedding is None:
                     continue
                 score = torch.dot(sent_embedding, question_embedding).item()

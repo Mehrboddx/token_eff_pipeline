@@ -62,7 +62,7 @@ JUDGE_PROMPT_TEMPLATE = (
 def parse_dataset(text: str) -> str | None:
     for line in text.splitlines():
         if line.startswith("Dataset: "):
-            return line[len("Dataset: "):].strip()
+            return line[len("Dataset: ") :].strip()
     return None
 
 
@@ -81,13 +81,13 @@ def parse_example(text: str) -> dict | None:
     answers_line = ""
     for line in header.splitlines():
         if line.startswith("Dataset: "):
-            dataset = line[len("Dataset: "):].strip()
+            dataset = line[len("Dataset: ") :].strip()
         elif line.startswith("Answers: "):
-            answers_line = line[len("Answers: "):].strip()
+            answers_line = line[len("Answers: ") :].strip()
 
-    ground_truths = [] if answers_line == "(none provided)" else [
-        a.strip() for a in answers_line.split("; ") if a.strip()
-    ]
+    ground_truths = (
+        [] if answers_line == "(none provided)" else [a.strip() for a in answers_line.split("; ") if a.strip()]
+    )
     return {
         "dataset": dataset,
         "question": question.strip(),
@@ -110,11 +110,15 @@ def llm_judge_grade(client, model, question, ground_truths, predicted):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--input_dir", default="output", help="Directory of evaluate_answers.py .txt outputs to grade in place.")
+    p.add_argument(
+        "--input_dir", default="output", help="Directory of evaluate_answers.py .txt outputs to grade in place."
+    )
     p.add_argument("--model", default="gemini-2.5-flash")
     p.add_argument("--project", default=os.environ.get("GOOGLE_CLOUD_PROJECT"))
     p.add_argument("--location", default=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"))
-    p.add_argument("--limit", type=int, default=None, help="Only grade the first N not-yet-judged files (omit for all).")
+    p.add_argument(
+        "--limit", type=int, default=None, help="Only grade the first N not-yet-judged files (omit for all)."
+    )
     p.add_argument("--csv", default=None, help="Optional path to write per-file verdicts as CSV.")
     return p.parse_args()
 
@@ -149,7 +153,11 @@ def main():
 
         try:
             is_correct, verdict = llm_judge_grade(
-                client, args.model, parsed["question"], parsed["ground_truths"], parsed["model_answer"],
+                client,
+                args.model,
+                parsed["question"],
+                parsed["ground_truths"],
+                parsed["model_answer"],
             )
         except Exception as exc:
             print(f"[{path.name}] ERROR: {exc}")
@@ -184,14 +192,19 @@ def main():
     print(f"{'OVERALL':<20}{len(all_outcomes):>6}{sum(all_outcomes) / len(all_outcomes):>19.1%}")
 
     if skipped_unanswered:
-        print(f"\n{len(skipped_unanswered)} file(s) skipped (no MODEL ANSWER yet): "
-              f"{skipped_unanswered[:5]}{'...' if len(skipped_unanswered) > 5 else ''}")
+        print(
+            f"\n{len(skipped_unanswered)} file(s) skipped (no MODEL ANSWER yet): "
+            f"{skipped_unanswered[:5]}{'...' if len(skipped_unanswered) > 5 else ''}"
+        )
     if skipped_no_reference:
-        print(f"{len(skipped_no_reference)} file(s) skipped (no reference answer to grade against): "
-              f"{skipped_no_reference[:5]}{'...' if len(skipped_no_reference) > 5 else ''}")
+        print(
+            f"{len(skipped_no_reference)} file(s) skipped (no reference answer to grade against): "
+            f"{skipped_no_reference[:5]}{'...' if len(skipped_no_reference) > 5 else ''}"
+        )
 
     if args.csv:
         import csv
+
         with open(args.csv, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(["file", "dataset", "llm_judge_correct"])

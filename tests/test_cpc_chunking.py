@@ -11,7 +11,7 @@ class WordTokenizer:
 
     def __call__(self, text, add_special_tokens=False, return_offsets_mapping=False, **_):
         spans = [match.span() for match in re.finditer(r"\S+", text)]
-        encoded = {"input_ids": list(range(len(spans)))}
+        encoded: dict[str, list] = {"input_ids": list(range(len(spans)))}
         if return_offsets_mapping:
             encoded["offset_mapping"] = spans
         return encoded
@@ -38,7 +38,14 @@ class SessionChunkingTests(unittest.TestCase):
         self.compressor._chunk_embeddings = fake_chunk_embeddings
 
     def test_chunks_never_cross_sessions_and_fit_the_budget(self):
-        texts = ["one two three", "four five", "six seven eight", "nine ten", "eleven", "twelve thirteen fourteen fifteen"]
+        texts = [
+            "one two three",
+            "four five",
+            "six seven eight",
+            "nine ten",
+            "eleven",
+            "twelve thirteen fourteen fifteen",
+        ]
         prefixes = ["\nUser: ", " ", "\nAssistant: ", "\nUser: ", " ", "\nAssistant: "]
         groups = [0, 0, 0, 1, 1, 1]
 

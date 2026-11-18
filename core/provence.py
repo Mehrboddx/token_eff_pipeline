@@ -31,8 +31,9 @@ Two ways to use it:
 
 import json
 import string
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Any
 
 from core.units import Unit, role_label
 
@@ -49,17 +50,18 @@ def normalize_query(text: str) -> str:
 
 @dataclass
 class Window:
-    ids: List[int]
-    spans: List[Tuple[int, int, int]] = field(default_factory=list)  # (unit index, start, end)
+    ids: list[int]
+    spans: list[tuple[int, int, int]] = field(default_factory=list)  # (unit index, start, end)
 
 
-def pack_windows(units: Sequence[Unit], query_ids: Sequence[int], encode: Callable[[str], List[int]],
-                 max_len: int = MAX_LEN) -> List[Window]:
+def pack_windows(
+    units: Sequence[Unit], query_ids: Sequence[int], encode: Callable[[str], list[int]], max_len: int = MAX_LEN
+) -> list[Window]:
     head = [CLS_ID, *query_ids, SEP_ID]
     room = max_len - len(head) - 1  # -1 for the closing [SEP]
-    windows: List[Window] = []
-    body: List[int] = []
-    spans: List[Tuple[int, int, int]] = []
+    windows: list[Window] = []
+    body: list[int] = []
+    spans: list[tuple[int, int, int]] = []
 
     def flush():
         nonlocal body, spans
@@ -79,7 +81,7 @@ def pack_windows(units: Sequence[Unit], query_ids: Sequence[int], encode: Callab
         tokens = encode(" " + unit.text)
         size = max(1, room - len(label))
         for start in range(0, len(tokens), size):
-            piece = tokens[start:start + size]
+            piece = tokens[start : start + size]
             if body and len(body) + len(label) + len(piece) > room:
                 flush()
             if new_turn or not body:
@@ -92,8 +94,9 @@ def pack_windows(units: Sequence[Unit], query_ids: Sequence[int], encode: Callab
     return windows
 
 
-def unit_scores(windows: Sequence[Window], probs: Sequence[Sequence[float]], n_units: int,
-                threshold: Optional[float] = None) -> List[float]:
+def unit_scores(
+    windows: Sequence[Window], probs: Sequence[Sequence[float]], n_units: int, threshold: float | None = None
+) -> list[float]:
     """Per unit: mean keep probability of its tokens, or, with a threshold,
     the share of its tokens whose keep probability exceeds it (Provence's
     sentence rounding)."""
@@ -110,7 +113,7 @@ def unit_scores(windows: Sequence[Window], probs: Sequence[Sequence[float]], n_u
 class ProvenceModel:
     """DeBERTa-v3 encoder + Provence's token keep/drop head."""
 
-    def __init__(self, model_name: str = DEFAULT_MODEL, device: Optional[str] = None, batch_size: int = 32) -> None:
+    def __init__(self, model_name: str = DEFAULT_MODEL, device: str | None = None, batch_size: int = 32) -> None:
         import torch
         from huggingface_hub import hf_hub_download
         from safetensors.torch import load_file
@@ -128,31 +131,32 @@ class ProvenceModel:
         config = DebertaV2Config(**config)
 
         state = load_file(hf_hub_download(model_name, "model.safetensors"))
-        self.encoder = DebertaV2Model(config)
-        self.encoder.load_state_dict({key[len("deberta."):]: value for key, value in state.items()
-                                      if key.startswith("deberta.")})
+        self.encoder: Any = DebertaV2Model(config)
+        self.encoder.load_state_dict(
+            {key[len("deberta.") :]: value for key, value in state.items() if key.startswith("deberta.")}
+        )
         self.head = torch.nn.Linear(config.hidden_size, 2)
         self.head.load_state_dict({"weight": state["token_classifier.weight"], "bias": state["token_classifier.bias"]})
         self.encoder.eval().to(self.device)
         self.head.eval().to(self.device)
 
-    def encode(self, text: str) -> List[int]:
+    def encode(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False)
 
-    def keep_probs(self, sequences: Sequence[Sequence[int]]) -> List[List[float]]:
+    def keep_probs(self, sequences: Sequence[Sequence[int]]) -> list[list[float]]:
         torch = self._torch
-        probs: List[List[float]] = []
+        probs: list[list[float]] = []
         with torch.no_grad():
             for start in range(0, len(sequences), self.batch_size):
-                batch = sequences[start:start + self.batch_size]
+                batch = sequences[start : start + self.batch_size]
                 width = max(len(ids) for ids in batch)
                 ids = torch.full((len(batch), width), PAD_ID, dtype=torch.long)
                 for row, sequence in enumerate(batch):
-                    ids[row, :len(sequence)] = torch.tensor(sequence, dtype=torch.long)
+                    ids[row, : len(sequence)] = torch.tensor(sequence, dtype=torch.long)
                 ids = ids.to(self.device)
                 hidden = self.encoder(input_ids=ids, attention_mask=(ids != PAD_ID).long()).last_hidden_state
                 keep = torch.softmax(self.head(hidden).float(), dim=-1)[:, :, 1].cpu().tolist()
-                probs.extend(row[:len(sequence)] for row, sequence in zip(keep, batch))
+                probs.extend(row[: len(sequence)] for row, sequence in zip(keep, batch))
         return probs
 
 
@@ -160,22 +164,26 @@ class ProvenceCompressor:
     """Scores units with Provence's keep probabilities; TokenWise fills the
     token budget with them like any other `score_units` scorer."""
 
-    def __init__(self, model: str = DEFAULT_MODEL, threshold: Optional[float] = None,
-                 model_factory: Optional[Callable[[], object]] = None) -> None:
+    def __init__(
+        self,
+        model: str = DEFAULT_MODEL,
+        threshold: float | None = None,
+        model_factory: Callable[[], Any] | None = None,
+    ) -> None:
         self.model_name = model
         self.threshold = threshold
         self._model_factory = model_factory or (lambda: ProvenceModel(model))
-        self._model = None
+        self._model: Any = None
 
-    def _scores(self, units: Sequence[Unit], query: str, threshold: Optional[float]) -> List[float]:
+    def _scores(self, units: Sequence[Unit], query: str, threshold: float | None) -> list[float]:
         if self._model is None:
             self._model = self._model_factory()
-        query_ids = self._model.encode(normalize_query(query))[:MAX_LEN // 2]
+        query_ids = self._model.encode(normalize_query(query))[: MAX_LEN // 2]
         windows = pack_windows(units, query_ids, self._model.encode)
         probs = self._model.keep_probs([window.ids for window in windows]) if windows else []
         return unit_scores(windows, probs, len(units), threshold)
 
-    def score_units(self, units: Sequence[Unit], queries: Sequence[str]) -> List[List[float]]:
+    def score_units(self, units: Sequence[Unit], queries: Sequence[str]) -> list[list[float]]:
         return [self._scores(units, query, None) for query in queries]
 
 
@@ -184,6 +192,9 @@ class ProvenceSelector(ProvenceCompressor):
     share of kept tokens exceeds it. TokenWise calls `select_units`, so
     there is no token budget; the result may be empty, as in the paper."""
 
-    def select_units(self, units: Sequence[Unit], query: str) -> List[int]:
-        shares = self._scores(units, query, self.threshold)
-        return [index for index, share in enumerate(shares) if share > self.threshold]
+    def select_units(self, units: Sequence[Unit], query: str) -> list[int]:
+        threshold = self.threshold
+        if threshold is None:
+            raise ValueError("ProvenceSelector needs a threshold")
+        shares = self._scores(units, query, threshold)
+        return [index for index, share in enumerate(shares) if share > threshold]

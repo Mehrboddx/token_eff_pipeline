@@ -5,7 +5,7 @@ from tests import _fake_genai
 _fake_genai.install()
 
 from core.dycp import DyCPCompressor, group_turns, kadane_dial  # noqa: E402
-from core.tokenWise import TokenWise  # noqa: E402
+from core.token_wise import TokenWise  # noqa: E402
 from core.units import Unit  # noqa: E402
 
 
@@ -73,6 +73,7 @@ class DyCPCompressorTests(unittest.TestCase):
     def test_tokenwise_uses_the_selector_and_ignores_the_budget(self):
         tokenwise = TokenWise(model=DyCPCompressor(encoder_factory=FakeEncoder))
         result = tokenwise.compress_units("Which restaurant in Rome?", token_budget=1, units=self.units)
+        assert result.selected is not None
         self.assertEqual([u.id for u in result.selected], [4, 5, 6, 7])
         self.assertIn("Roscioli", result.text)
         self.assertNotIn("gardening", result.text)

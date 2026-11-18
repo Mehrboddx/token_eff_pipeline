@@ -39,8 +39,7 @@ def _stand_in(name):
 def install():
     fake_google = pytypes.ModuleType("google")
     fake_genai = pytypes.ModuleType("google.genai")
-    fake_genai.types = _Namespace(Content=Content, Part=Part)
-    fake_genai.__getattr__ = _stand_in
-    fake_google.genai = fake_genai
+    fake_genai.__dict__.update(types=_Namespace(Content=Content, Part=Part), __getattr__=_stand_in)
+    fake_google.__dict__["genai"] = fake_genai
     sys.modules.setdefault("google", fake_google)
     sys.modules.setdefault("google.genai", fake_genai)

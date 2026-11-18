@@ -1,0 +1,7 @@
+{
+  "include": ["core", "eval", "analysis", "tests", "main.py"],
+  "exclude": ["**/__pycache__", "logs", "eval/data", ".venv"],
+  "pythonVersion": "3.11",
+  "venvPath": ".",
+  "venv": ".venv"
+}

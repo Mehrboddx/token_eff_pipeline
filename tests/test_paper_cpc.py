@@ -4,7 +4,7 @@ from tests import _fake_genai
 
 _fake_genai.install()
 
-from core.tokenWise import TokenWise  # noqa: E402
+from core.token_wise import TokenWise  # noqa: E402
 from eval.longmemeval import CompressionSettings, compress_question, paper_transcript, seed_memory_from_haystack  # noqa: E402
 
 
@@ -44,14 +44,17 @@ class FakePaperCPC:
 class PaperCPCTests(unittest.TestCase):
     def test_transcript_has_dates_and_labels_in_the_text(self):
         transcript = paper_transcript(seed_memory_from_haystack(item()))
-        self.assertEqual(transcript.splitlines(), [
-            "[Session: 10 days before this question]",
-            "User: I bought a smoker today. It was on sale.",
-            "Assistant: Nice, enjoy the barbecue!",
-            "[Session: 5 days before this question]",
-            "User: What should I cook this weekend?",
-            "Assistant: Try brisket in your new smoker.",
-        ])
+        self.assertEqual(
+            transcript.splitlines(),
+            [
+                "[Session: 10 days before this question]",
+                "User: I bought a smoker today. It was on sale.",
+                "Assistant: Nice, enjoy the barbecue!",
+                "[Session: 5 days before this question]",
+                "User: What should I cook this weekend?",
+                "Assistant: Try brisket in your new smoker.",
+            ],
+        )
 
     def test_whole_history_is_compressed_against_the_plain_question(self):
         model = FakePaperCPC()

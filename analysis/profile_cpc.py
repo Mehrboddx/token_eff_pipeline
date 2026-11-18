@@ -8,32 +8,37 @@ token counting it does -- so the stages are not meant to sum; `total` is
 the whole compress_question call.
 
 Usage (on the GPU machine):
-    python -m eval.profile_cpc --dataset longmemeval_s --limit 50 --out logs/profile_cpc_lme.jsonl
+    python -m analysis.profile_cpc --dataset longmemeval_s --limit 50 --out logs/profile_cpc_lme.jsonl
 """
 
 import argparse
 import functools
 import json
 import statistics
-import sys
 import time
 from collections import defaultdict
 from datetime import datetime
 
+from analysis.latency import METHODS, _torch, clear_cache, timed
+from core.console import utf8_console
 from core.selection import SelectionConfig
-from eval.latency import METHODS, _torch, clear_cache, timed
-from eval.longmemeval import CompressionSettings, build_tokenwise, compress_question, load_items, seed_memory_from_haystack
+from eval.longmemeval import (
+    CompressionSettings,
+    build_tokenwise,
+    compress_question,
+    load_items,
+    seed_memory_from_haystack,
+)
 
-if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+utf8_console()
 
 # Compressor methods to time. _embed_with_spans is the only one on the GPU.
 STAGES = {
     "_embed_with_spans": "gpu_encode",
     "_split_sentences": "sentence_split",
     "_expand_oversized": "expand_oversized",
-    "_build_chunks": "chunk_packing",       # paper path
-    "_pack_group": "chunk_packing",         # our path
+    "_build_chunks": "chunk_packing",  # paper path
+    "_pack_group": "chunk_packing",  # our path
     "_span_average": "span_pooling",
     "_count_tokens": "token_counting",
 }
@@ -83,32 +88,46 @@ def main():
             build_kwargs, settings_kwargs, _ = METHODS[method]
             settings = CompressionSettings(token_budget=args.token_budget, **settings_kwargs)
             tokenwise = build_tokenwise(selection=SelectionConfig(), **build_kwargs)
+            assert tokenwise is not None  # always built with a compressor here
             totals = defaultdict(float)
             instrument(tokenwise.model._compressor, totals)
 
-            for index, item in enumerate(items[:args.warmup] + items):
+            for index, item in enumerate(items[: args.warmup] + items):
                 memory = seed_memory_from_haystack(item)
                 clear_cache(tokenwise)
                 # clear_cache swaps the cache object, not the compressor, so the timers stay in place.
                 totals.clear()
-                _, seconds = timed(lambda: compress_question(item, tokenwise, settings, seeded_memory=memory))
+                _, seconds = timed(
+                    functools.partial(compress_question, item, tokenwise, settings, seeded_memory=memory)
+                )
                 if index < args.warmup:
                     continue
                 stages = {key: round(value, 4) for key, value in totals.items()}
                 stages["cpu_other"] = round(seconds - totals["gpu_encode"], 4)
-                row = {"event": "profile", "dataset": args.dataset, "method": method, "gpu": gpu,
-                       "question_id": item["question_id"], "total": round(seconds, 4), **stages}
+                row = {
+                    "event": "profile",
+                    "dataset": args.dataset,
+                    "method": method,
+                    "gpu": gpu,
+                    "question_id": item["question_id"],
+                    "total": round(seconds, 4),
+                    **stages,
+                }
                 out.write(json.dumps({"timestamp": datetime.now().isoformat(), **row}) + "\n")
                 out.flush()
                 for key, value in row.items():
                     if isinstance(value, float):
                         summary[method][key].append(value)
-                print(f"{method} {index - args.warmup + 1}/{len(items)} total {seconds:.1f}s "
-                      f"gpu {totals['gpu_encode']:.1f}s", flush=True)
+                print(
+                    f"{method} {index - args.warmup + 1}/{len(items)} total {seconds:.1f}s "
+                    f"gpu {totals['gpu_encode']:.1f}s",
+                    flush=True,
+                )
 
             del tokenwise
             if torch:
                 import gc
+
                 gc.collect()
                 torch.cuda.empty_cache()
 

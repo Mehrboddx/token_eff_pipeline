@@ -17,6 +17,7 @@ Usage:
     python -m eval.locomo_f1 logs/judge_runs/*locomo*.jsonl
 """
 
+import argparse
 import json
 import random
 import re
@@ -28,10 +29,10 @@ from pathlib import Path
 
 from nltk.stem import PorterStemmer
 
+from core.console import utf8_console
 from eval.locomo import CATEGORIES
 
-if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+utf8_console()
 
 STEMMER = PorterStemmer()
 NAME_TO_CATEGORY = {name: number for number, name in CATEGORIES.items()}
@@ -97,7 +98,9 @@ def paired_bootstrap(a, b, rounds=10000, seed=0):
 
 
 def main():
-    paths = [Path(p) for p in sys.argv[1:]]
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("logs", nargs="+", help="judged LoCoMo run logs")
+    paths = [Path(p) for p in parser.parse_args().logs]
     if not paths:
         sys.exit(__doc__)
     runs = {path.stem: load(path) for path in paths}
@@ -105,15 +108,24 @@ def main():
     print(f"{'run':<70} {'n':>5} {'F1':>5} {'judge':>6} {'len':>5}  " + " ".join(f"{t[:6]:>6}" for t in ORDER))
     scored = {}
     for name, results in runs.items():
-        rows = {qid: (r["question_type"], score(r["question_type"], r.get("predicted"), r["reference"]),
-                      bool(r.get("llm_judge_correct")), len(normalize_answer(r.get("predicted") or "").split()))
-                for qid, r in results.items() if r.get("question_type") in NAME_TO_CATEGORY}
+        rows = {
+            qid: (
+                r["question_type"],
+                score(r["question_type"], r.get("predicted"), r["reference"]),
+                bool(r.get("llm_judge_correct")),
+                len(normalize_answer(r.get("predicted") or "").split()),
+            )
+            for qid, r in results.items()
+            if r.get("question_type") in NAME_TO_CATEGORY
+        }
         scored[name] = rows
         values = list(rows.values())
         by_type = {t: [v[1] for v in values if v[0] == t] for t in ORDER}
-        print(f"{name:<70} {len(values):>5} {100 * statistics.mean(v[1] for v in values):>5.1f} "
-              f"{100 * statistics.mean(v[2] for v in values):>6.1f} {statistics.mean(v[3] for v in values):>5.1f}  "
-              + " ".join(f"{100 * statistics.mean(by_type[t]):>6.1f}" if by_type[t] else f"{'-':>6}" for t in ORDER))
+        print(
+            f"{name:<70} {len(values):>5} {100 * statistics.mean(v[1] for v in values):>5.1f} "
+            f"{100 * statistics.mean(v[2] for v in values):>6.1f} {statistics.mean(v[3] for v in values):>5.1f}  "
+            + " ".join(f"{100 * statistics.mean(by_type[t]):>6.1f}" if by_type[t] else f"{'-':>6}" for t in ORDER)
+        )
     return scored
 
 

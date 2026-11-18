@@ -6,7 +6,7 @@ _fake_genai.install()
 
 from core.memory import Memory  # noqa: E402
 from core.runner import Runner  # noqa: E402
-from core.tokenWise import CompressionResult  # noqa: E402
+from core.token_wise import CompressionResult  # noqa: E402
 
 
 def count_words(text):
@@ -32,7 +32,9 @@ def seeded_memory():
         prefix = f"(from {10 - index} days before this question) "
         memory.add_user_message(f"User fact number {index} is quite specific.", meta=meta, prefix=prefix)
         memory.add_model_content(
-            _fake_genai.Content(role="model", parts=[_fake_genai.Part.from_text(prefix + f"Reply {index} acknowledges it.")]),
+            _fake_genai.Content(
+                role="model", parts=[_fake_genai.Part.from_text(prefix + f"Reply {index} acknowledges it.")]
+            ),
             meta=meta,
             scored_text=f"Reply {index} acknowledges it.",
         )
@@ -53,6 +55,7 @@ class RunnerCompressionTests(unittest.TestCase):
 
         self.assertEqual(mode, "compressed_history")
         self.assertTrue(history[0].parts[0].text.startswith("Relevant earlier context:\nSELECTED"))
+        assert runner.last_compression is not None
         cutoff = runner.last_compression["cutoff_index"]
         self.assertEqual(history[1:], memory.get_history()[cutoff:])
         self.assertTrue(all(unit.entry_index < cutoff for unit in tokenwise.calls[0]["units"]))
@@ -80,7 +83,9 @@ class RunnerCompressionTests(unittest.TestCase):
         asked = "(Today's date is 2023/05/01.) How many days between A and B?"
         memory.add_user_message(asked)
 
-        runner._build_history(asked, ["x"], retrieval_queries=["How many days between A and B?", "when was A", "when was B"])
+        runner._build_history(
+            asked, ["x"], retrieval_queries=["How many days between A and B?", "when was A", "when was B"]
+        )
 
         call = tokenwise.calls[0]
         self.assertEqual(call["query"], "How many days between A and B?")

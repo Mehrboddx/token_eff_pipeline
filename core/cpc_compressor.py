@@ -1,8 +1,9 @@
-from typing import Any, Dict, List, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 
-from core.tokenWise import TokenWise
+from core.token_wise import TokenWise
 from core.units import Unit, role_label
 
 # TokenWise.PRETRAINED_PRESETS carries the tokenizer + LoRA adapter for each
@@ -19,8 +20,13 @@ BASE_MODELS = {
 LAYOUT_VERSION = "session-chunks-v1"
 
 
-def cpc_cache_key(preset: str, max_seq_length: int, attention: str = "bidirectional",
-                  speaker_labels: bool = True, session_chunks: bool = True) -> str:
+def cpc_cache_key(
+    preset: str,
+    max_seq_length: int,
+    attention: str = "bidirectional",
+    speaker_labels: bool = True,
+    session_chunks: bool = True,
+) -> str:
     ablated = ("" if speaker_labels else "-nolabels") + ("" if session_chunks else "-flatchunks")
     return f"cpc-{preset}-{max_seq_length}-{attention}-{LAYOUT_VERSION}{ablated}"
 
@@ -31,8 +37,9 @@ class CPCCompressor:
     TokenWise uses for extractive scorers. Reuses the replicate/
     implementation directly so there's one copy of the encoding logic."""
 
-    def __init__(self, preset: str = "llama", speaker_labels: bool = True, session_chunks: bool = True,
-                 **kwargs: Any) -> None:
+    def __init__(
+        self, preset: str = "llama", speaker_labels: bool = True, session_chunks: bool = True, **kwargs: Any
+    ) -> None:
         """`speaker_labels` / `session_chunks` False are ablations: no role
         label before each turn, and chunks packed across sessions."""
         if preset not in TokenWise.PRETRAINED_PRESETS or preset not in BASE_MODELS:
@@ -48,14 +55,14 @@ class CPCCompressor:
         # module's constants (e.g. a CPU-only ablation over cached scores)
         # doesn't pull in torch. Loading the base model + LoRA is expensive;
         # Mistral-7B needs far more VRAM than an 8GB laptop GPU -- see
-        # eval/deploy.sh for running it on a Vertex AI GPU instead.
+        # scripts/deploy.sh for running it on a Vertex AI GPU instead.
         from replicate.cpc_compressor import CPCCompressor as _CPCCompressor
 
         self._compressor = _CPCCompressor(**kwargs)
         self.speaker_labels = speaker_labels
         self.session_chunks = session_chunks
 
-    def unit_prefixes(self, units: Sequence[Unit]) -> List[str]:
+    def unit_prefixes(self, units: Sequence[Unit]) -> list[str]:
         """A turn break + role label before the first sentence of each turn,
         a space otherwise -- conversational structure for the encoder."""
         prefixes = []
@@ -71,7 +78,7 @@ class CPCCompressor:
         single group (the whole history) when session chunks are off."""
         return [unit.session if self.session_chunks else None for unit in units]
 
-    def score_units(self, units: Sequence[Unit], queries: Sequence[str]) -> List[List[float]]:
+    def score_units(self, units: Sequence[Unit], queries: Sequence[str]) -> list[list[float]]:
         return self._compressor.score_texts(
             [unit.text for unit in units],
             self.unit_prefixes(units),
@@ -84,7 +91,7 @@ class CPCCompressor:
         chunked as a whole, top sentences joined in their original order."""
         return self._compressor.compress(context, question, token_budget, count_tokens=count_tokens)
 
-    def unit_embeddings(self, units: Sequence[Unit], ids: Sequence[int]) -> Dict[int, np.ndarray]:
+    def unit_embeddings(self, units: Sequence[Unit], ids: Sequence[int]) -> dict[int, np.ndarray]:
         """Context-aware sentence embeddings for the given unit ids, for
         meaning-based MMR. Chunks just scored are served from the
         compressor's embedding cache, so this costs no extra encoding."""

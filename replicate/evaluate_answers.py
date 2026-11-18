@@ -82,9 +82,7 @@ def main():
         prompt = f"CONTEXT:\n{context}\n\nQUESTION:\n{question}"
 
         try:
-            response = client.models.generate_content(
-                model=args.model, contents=prompt, config=config
-            )
+            response = client.models.generate_content(model=args.model, contents=prompt, config=config)
             answer = (response.text or "").strip()
         except Exception as exc:
             print(f"[{path.name}] ERROR: {exc}")

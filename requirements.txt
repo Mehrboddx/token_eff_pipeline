@@ -10,3 +10,4 @@ google-genai
 google-cloud-storage
 huggingface_hub
 python-dotenv
+spacy

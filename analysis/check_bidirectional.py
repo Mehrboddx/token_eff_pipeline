@@ -10,8 +10,8 @@ A/B of bidirectional vs. causal on real LongMemEval questions.
 The model is loaded once and switched between modes in place.
 
 Usage:
-    python -m eval.check_bidirectional --cpc-preset mistral
-    python -m eval.check_bidirectional --cpc-preset mistral --limit 50 --token-budget 500
+    python -m analysis.check_bidirectional --cpc-preset mistral
+    python -m analysis.check_bidirectional --cpc-preset mistral --limit 50 --token-budget 500
 """
 
 import argparse
@@ -19,13 +19,13 @@ import sys
 
 import torch
 
-from core.cpcCompressor import CPCCompressor
-from core.tokenWise import TokenWise
+from core.console import utf8_console
+from core.cpc_compressor import CPCCompressor
+from core.token_wise import TokenWise
 from eval.evidence import exact_evidence_recall, summarize_recall
 from eval.longmemeval import CompressionSettings, load_longmemeval, make_runner, seed_memory_from_haystack
 
-if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+utf8_console()
 
 
 def set_attention(adapter, mode):
@@ -66,8 +66,11 @@ def main():
     # Causal should be ~0 (bf16 kernels on different lengths can leave tiny
     # noise); bidirectional must be clearly larger.
     ok = results["bidirectional"] > max(10 * results["causal"], 1e-2)
-    print("  PASS: bidirectional attention is active" if ok else
-          "  FAIL: expected ~0 for causal and a clear difference for bidirectional")
+    print(
+        "  PASS: bidirectional attention is active"
+        if ok
+        else "  FAIL: expected ~0 for causal and a clear difference for bidirectional"
+    )
 
     print(f"\n== 2. Evidence recall, plain top-k, budget {args.token_budget}, {args.limit} questions")
     items = load_longmemeval(limit=args.limit, seed=args.seed)
@@ -77,16 +80,21 @@ def main():
     for index, item in enumerate(items, start=1):
         memory = seed_memory_from_haystack(item)
         memory.add_user_message(item["question"])
-        units, cutoff = make_runner(None, memory, tokenwise, settings).compression_candidates()
+        candidates = make_runner(None, memory, tokenwise, settings).compression_candidates()
+        if candidates is None:  # history too short to compress
+            continue
+        units, cutoff = candidates
         for mode in rows:
             set_attention(adapter, mode)
             result = tokenwise.compress_units(item["question"], settings.token_budget, units)
             last = {"cutoff_index": cutoff, "result": result, "candidates": len(units)}
-            rows[mode].append({
-                "question_type": item["question_type"],
-                "evidence": exact_evidence_recall(memory, item, last, "compressed_history"),
-                "compressed_tokens": result.tokens,
-            })
+            rows[mode].append(
+                {
+                    "question_type": item["question_type"],
+                    "evidence": exact_evidence_recall(memory, item, last, "compressed_history"),
+                    "compressed_tokens": result.tokens,
+                }
+            )
         print(f"  {index}/{len(items)}", flush=True)
     for mode, mode_rows in rows.items():
         summarize_recall(f"CPC {args.cpc_preset} ({mode})", mode_rows)

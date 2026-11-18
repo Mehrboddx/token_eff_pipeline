@@ -1,18 +1,18 @@
-import os
 import logging
+import os
 from pathlib import Path
 from uuid import uuid4
 
 from dotenv import load_dotenv
 
 from core.agent import Agent
-from core.cpcCompressor import CPCCompressor
-from core.geminiCompressor import GeminiCompressor
+from core.agent_tools import TOOLS, PipelineExit
+from core.cpc_compressor import CPCCompressor
+from core.gemini_compressor import GeminiCompressor
 from core.memory import Memory
+from core.prompts import universal_agent_prompt
 from core.runner import Runner
-from core.tokenWise import TokenWise
-from prompts.prompt import universal_agent_prompt
-from tools.tools import PipelineExit, TOOLS
+from core.token_wise import TokenWise
 
 load_dotenv()
 
@@ -57,7 +57,7 @@ def build_context_monitor(logger: logging.Logger):
 
 def write_turn_separator(logger: logging.Logger) -> None:
     for handler in logger.handlers:
-        if hasattr(handler, "stream") and handler.stream is not None:
+        if isinstance(handler, logging.StreamHandler) and handler.stream is not None:
             handler.stream.write("\n")
             handler.flush()
 

@@ -1,14 +1,14 @@
 import math
 import re
 from collections import Counter
-from typing import List, Sequence
+from collections.abc import Sequence
 
 from core.units import Unit
 
 _TOKEN = re.compile(r"\w+")
 
 
-def _tokens(text: str) -> List[str]:
+def _tokens(text: str) -> list[str]:
     return [token.lower() for token in _TOKEN.findall(text)]
 
 
@@ -16,7 +16,7 @@ class LexicalScorer:
     """Query word overlap normalized by sentence length -- the original
     TokenWise fallback scorer, now behind the shared score_units API."""
 
-    def score_units(self, units: Sequence[Unit], queries: Sequence[str]) -> List[List[float]]:
+    def score_units(self, units: Sequence[Unit], queries: Sequence[str]) -> list[list[float]]:
         unit_tokens = [set(_tokens(unit.text)) for unit in units]
         scores = []
         for query in queries:
@@ -34,7 +34,7 @@ class BM25Scorer:
         self.k1 = k1
         self.b = b
 
-    def score_units(self, units: Sequence[Unit], queries: Sequence[str]) -> List[List[float]]:
+    def score_units(self, units: Sequence[Unit], queries: Sequence[str]) -> list[list[float]]:
         docs = [Counter(_tokens(unit.text)) for unit in units]
         lengths = [sum(doc.values()) for doc in docs]
         average_length = (sum(lengths) / len(lengths)) if lengths else 0.0

@@ -18,36 +18,48 @@ rendered and counted here. A real gate would decide before answering,
 so only the chosen level is paid.
 
 Usage:
-    python -m eval.adaptive_budget --dataset longmemeval_s --encoder mistral
-    python -m eval.adaptive_budget --dataset locomo
+    python -m analysis.adaptive_budget --dataset longmemeval_s --encoder mistral
+    python -m analysis.adaptive_budget --dataset locomo
 """
 
 import argparse
 import json
 import statistics
-import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
 import tiktoken
 
+from core.console import utf8_console
 from eval.longmemeval import CompressionSettings, compress_question, load_items
 
-if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+utf8_console()
 
 ENCODING = tiktoken.get_encoding("cl100k_base")
 
 # dataset -> encoder -> [(level name, run tag)], cheapest first; full history last.
 LADDERS = {
     "longmemeval_s": {
-        "mistral": [("2k", "run0003_compress_cpc-mistral_b2000"), ("4k", "run0001_compress_cpc-mistral_b4000"),
-                    ("full", "run0039_full_fullhistory")],
-        "llama": [("2k", "run0005_compress_cpc-llama_b2000"), ("4k", "run0004_compress_cpc-llama_b4000"),
-                  ("full", "run0039_full_fullhistory")],
+        "mistral": [
+            ("0.5k", "run0047_compress_cpc-mistral_b500"),
+            ("1k", "run0048_compress_cpc-mistral_b1000"),
+            ("2k", "run0003_compress_cpc-mistral_b2000"),
+            ("4k", "run0001_compress_cpc-mistral_b4000"),
+            ("full", "run0039_full_fullhistory"),
+        ],
+        "llama": [
+            ("2k", "run0005_compress_cpc-llama_b2000"),
+            ("4k", "run0004_compress_cpc-llama_b4000"),
+            ("full", "run0039_full_fullhistory"),
+        ],
     },
     "locomo": {
-        "mistral": [("4k", "run0021_compress_locomo_cpc-mistral_b4000"), ("full", "run0041_full_locomo_fullhistory")],
+        "mistral": [
+            ("2k", "run0049_compress_locomo_cpc-mistral_b2000"),
+            ("4k", "run0021_compress_locomo_cpc-mistral_b4000"),
+            ("8k", "run0050_compress_locomo_cpc-mistral_b8000"),
+            ("full", "run0041_full_locomo_fullhistory"),
+        ],
     },
 }
 
@@ -72,8 +84,9 @@ def full_history_tokens(dataset, question_ids):
             if item["question_id"] in missing:
                 described, _, _, _ = compress_question(item, None, CompressionSettings())
                 # disallowed_special=(): some histories contain "<|endoftext|>" as plain text.
-                tokens[item["question_id"]] = sum(len(ENCODING.encode(entry["text"], disallowed_special=()))
-                                                  for entry in described)
+                tokens[item["question_id"]] = sum(
+                    len(ENCODING.encode(entry["text"], disallowed_special=())) for entry in described
+                )
         cache_path.write_text(json.dumps(tokens))
     return tokens
 
@@ -99,8 +112,13 @@ def main():
     ids = sorted(set.intersection(*(set(j) for j in judged)))
 
     full_tokens = full_history_tokens(args.dataset, set(ids))
-    tokens = {qid: [compressed[i][qid]["compressed_tokens"] if names[i] != "full" else full_tokens[qid]
-                    for i in range(len(names))] for qid in ids}
+    tokens = {
+        qid: [
+            compressed[i][qid]["compressed_tokens"] if names[i] != "full" else full_tokens[qid]
+            for i in range(len(names))
+        ]
+        for qid in ids
+    }
     correct = {qid: [bool(j[qid].get("llm_judge_correct")) for j in judged] for qid in ids}
     types = {qid: judged[0][qid]["question_type"] for qid in ids}
 
@@ -109,8 +127,10 @@ def main():
     fixed_4k = statistics.mean(tokens[q][names.index("4k")] for q in ids)
     for i, name in enumerate(names):
         mean = statistics.mean(tokens[q][i] for q in ids)
-        print(f"{'fixed ' + name:<22} {100 * statistics.mean(correct[q][i] for q in ids):>8.1f} {mean:>12,.0f} "
-              f"{mean / fixed_4k:>7.2f}")
+        print(
+            f"{'fixed ' + name:<22} {100 * statistics.mean(correct[q][i] for q in ids):>8.1f} {mean:>12,.0f} "
+            f"{mean / fixed_4k:>7.2f}"
+        )
 
     policies = [(f"match {names[r]}", "match", r) for r in range(1, len(names))] + [("oracle", "oracle", None)]
     picks_by_type = {}
@@ -118,12 +138,17 @@ def main():
         picks = {q: choose(names, correct[q], rule, reference) for q in ids}
         # match R: report R's own accuracy. Where R is wrong the cheapest
         # level is picked, and its lucky hits there are not counted.
-        accuracy = (statistics.mean(correct[q][reference] for q in ids) if rule == "match"
-                    else statistics.mean(correct[q][picks[q]] for q in ids))
+        accuracy = (
+            statistics.mean(correct[q][reference] for q in ids)
+            if reference is not None  # match R
+            else statistics.mean(correct[q][picks[q]] for q in ids)
+        )
         mean = statistics.mean(tokens[q][picks[q]] for q in ids)
         share = Counter(names[p] for p in picks.values())
-        print(f"{label:<22} {100 * accuracy:>8.1f} {mean:>12,.0f} {mean / fixed_4k:>7.2f}   "
-              + ", ".join(f"{n} {100 * share[n] / len(ids):.0f}%" for n in names))
+        print(
+            f"{label:<22} {100 * accuracy:>8.1f} {mean:>12,.0f} {mean / fixed_4k:>7.2f}   "
+            + ", ".join(f"{n} {100 * share[n] / len(ids):.0f}%" for n in names)
+        )
         picks_by_type[label] = picks
 
     print(f"\nShare of questions answered at the cheapest level, policy 'match {names[-1]}', by type:")
@@ -132,8 +157,10 @@ def main():
     for q in ids:
         by_type[types[q]].append(picks[q])
     for qtype, values in sorted(by_type.items()):
-        print(f"  {qtype:<28} n={len(values):<4} " + "  ".join(
-            f"{n} {100 * sum(v == i for v in values) / len(values):3.0f}%" for i, n in enumerate(names)))
+        print(
+            f"  {qtype:<28} n={len(values):<4} "
+            + "  ".join(f"{n} {100 * sum(v == i for v in values) / len(values):3.0f}%" for i, n in enumerate(names))
+        )
 
 
 if __name__ == "__main__":

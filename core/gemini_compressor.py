@@ -1,5 +1,4 @@
 import re
-from typing import Optional
 
 from google import genai
 from google.genai import types
@@ -25,10 +24,10 @@ class GeminiCompressor:
 
     def __init__(
         self,
-        project: Optional[str] = None,
+        project: str | None = None,
         location: str = "us-central1",
         model: str = "gemini-2.5-flash",
-        client: Optional[genai.Client] = None,
+        client: genai.Client | None = None,
     ) -> None:
         self.model = model
         # Explicit timeout: without one, a stalled request (e.g. an unusually

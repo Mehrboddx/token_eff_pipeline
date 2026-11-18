@@ -23,11 +23,11 @@ the learned gate; LoCoMo folds keep each conversation in one fold).
 Two stages. On the GPU machine, compute each question's features (CPC
 scores, from the score cache where present, else from the model) into
 logs/gate_features_<dataset>.json:
-    python -m eval.score_gate --dataset longmemeval_s --features-only --score-cache logs/score_cache
-    python -m eval.score_gate --dataset locomo --features-only --score-cache logs/score_cache
+    python -m analysis.score_gate --dataset longmemeval_s --features-only --score-cache logs/score_cache
+    python -m analysis.score_gate --dataset locomo --features-only --score-cache logs/score_cache
 Then, anywhere with the judge logs and that file (no model is loaded):
-    python -m eval.score_gate --dataset longmemeval_s
-    python -m eval.score_gate --dataset locomo
+    python -m analysis.score_gate --dataset longmemeval_s
+    python -m analysis.score_gate --dataset locomo
 """
 
 import argparse
@@ -35,18 +35,17 @@ import hashlib
 import json
 import re
 import statistics
-import sys
 from collections import Counter
 from pathlib import Path
 
 import numpy as np
 
+from analysis.adaptive_budget import LADDERS, full_history_tokens, results
+from core.console import utf8_console
 from core.selection import SelectionConfig, zscore
-from eval.adaptive_budget import LADDERS, full_history_tokens, results
 from eval.longmemeval import CompressionSettings, build_tokenwise, compress_question, load_items
 
-if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+utf8_console()
 
 TAUS = [x / 4 for x in range(4, 21)]  # 1.0 .. 5.0
 THETAS = [x / 20 for x in range(1, 20)]  # 0.05 .. 0.95
@@ -78,10 +77,13 @@ def features_for(dataset, ids, score_cache, budget, allow_model=False):
     # Checked before building anything: without a score cache, building the
     # CPC compressor loads the model at once.
     if not allow_model and score_cache is None:
-        raise SystemExit(f"{path} is missing questions; compute features on the GPU machine "
-                         "with --features-only first.")
-    tokenwise = build_tokenwise(compressor="cpc", cpc_preset="mistral", selection=SelectionConfig(),
-                                score_cache=score_cache)
+        raise SystemExit(
+            f"{path} is missing questions; compute features on the GPU machine with --features-only first."
+        )
+    tokenwise = build_tokenwise(
+        compressor="cpc", cpc_preset="mistral", selection=SelectionConfig(), score_cache=score_cache
+    )
+    assert tokenwise is not None  # always built with a compressor here
     if not allow_model:
         # The score cache builds CPC lazily, on the first miss: make a miss fail instead.
         tokenwise.model._factory = refuse_to_load
@@ -109,12 +111,19 @@ def features_for(dataset, ids, score_cache, budget, allow_model=False):
             continue
         pairs = sorted(zip(captured["z"], captured["tokens"]), reverse=True)
         z = [value for value, _ in pairs]
-        top = lambda k: z[min(k, len(z)) - 1]
+
+        def top(k, z=z):
+            return z[min(k, len(z)) - 1]
+
         cached[item["question_id"]] = {
             "need": {str(tau): sum(t for value, t in pairs if value >= tau) for tau in TAUS},
             "units": len(z),
             "history_tokens": sum(t for _, t in pairs),
-            "z1": z[0], "z5": top(5), "z10": top(10), "z20": top(20), "z50": top(50),
+            "z1": z[0],
+            "z5": top(5),
+            "z10": top(10),
+            "z20": top(20),
+            "z50": top(50),
             **{f"count_z{level}": sum(value >= level for value in z) for level in Z_LEVELS},
         }
     path.write_text(json.dumps(cached))
@@ -127,10 +136,16 @@ def vector(features, question):
     if features is None:
         return [0.0] * (11 + len(Z_LEVELS) + len(CUES))
     return [
-        np.log1p(features["units"]), np.log1p(features["history_tokens"]),
-        features["z1"], features["z5"], features["z10"], features["z20"], features["z50"],
+        np.log1p(features["units"]),
+        np.log1p(features["history_tokens"]),
+        features["z1"],
+        features["z5"],
+        features["z10"],
+        features["z20"],
+        features["z50"],
         features["z1"] - features["z10"],
-        np.log1p(features["need"]["2.0"]), np.log1p(features["need"]["3.0"]),
+        np.log1p(features["need"]["2.0"]),
+        np.log1p(features["need"]["3.0"]),
         *[np.log1p(features[f"count_z{level}"]) for level in Z_LEVELS],
         len(q.split()),
         *[float(bool(re.search(pattern, q))) for pattern in CUES.values()],
@@ -148,8 +163,56 @@ def cascade(probabilities, theta, reference):
 
 
 def evaluate(ids, picks, correct, tokens):
-    return (statistics.mean(correct[q][picks[q]] for q in ids),
-            statistics.mean(tokens[q][picks[q]] for q in ids))
+    return (statistics.mean(correct[q][picks[q]] for q in ids), statistics.mean(tokens[q][picks[q]] for q in ids))
+
+
+def mix_frontier(ids, correct, tokens, names):
+    """Fixed budgets on the upper concave hull of (mean tokens, accuracy):
+    the best accuracy any random mix of two fixed budgets reaches at each
+    token level. A budget below the hull (e.g. one beaten by a cheaper one)
+    is never worth mixing in."""
+    points = sorted(
+        (statistics.mean(tokens[q][i] for q in ids), statistics.mean(correct[q][i] for q in ids), i)
+        for i in range(len(names))
+    )
+    hull = []
+    for point in points:
+        if hull and point[1] <= hull[-1][1]:
+            continue  # more tokens, no better: never on the frontier
+        while len(hull) >= 2:
+            (x1, y1, _), (x2, y2, _) = hull[-2], hull[-1]
+            if (y2 - y1) * (point[0] - x1) <= (point[1] - y1) * (x2 - x1):  # hull[-1] on or below the chord
+                hull.pop()
+            else:
+                break
+        hull.append(point)
+    return hull
+
+
+def versus_mix(ids, picks, correct, tokens, names, resamples=10_000, seed=0):
+    """The gate against the best random mix of two fixed budgets with the
+    same mean tokens: (mix accuracy, gate - mix, bootstrap p). Per question
+    the mix scores (1-w)*correct[i] + w*correct[j]; the difference is
+    resampled by question, with w held fixed."""
+    _, mean = evaluate(ids, picks, correct, tokens)
+    hull = mix_frontier(ids, correct, tokens, names)
+    fixed = {i: x for x, _, i in hull}
+    order = [i for _, _, i in hull]
+    if mean <= fixed[order[0]]:
+        return None  # cheaper than every fixed budget: no mix to compare with
+    if mean >= fixed[order[-1]]:
+        i = j = order[-1]  # beyond the frontier: the best fixed budget is cheaper and at least as good
+        w = 0.0
+    else:
+        k = next(k for k in range(len(order) - 1) if fixed[order[k]] <= mean <= fixed[order[k + 1]])
+        i, j = order[k], order[k + 1]
+        w = (mean - fixed[i]) / (fixed[j] - fixed[i])
+    diff = np.array([correct[q][picks[q]] - ((1 - w) * correct[q][i] + w * correct[q][j]) for q in ids])
+    rng = np.random.default_rng(seed)
+    boot = diff[rng.integers(0, len(diff), (resamples, len(diff)))].mean(axis=1)
+    p = min(1.0, 2 * min((boot <= 0).mean(), (boot >= 0).mean()))
+    accuracy, _ = evaluate(ids, picks, correct, tokens)
+    return accuracy - diff.mean(), diff.mean(), p
 
 
 def report(label, ids, picks, correct, tokens, names, reference):
@@ -157,9 +220,13 @@ def report(label, ids, picks, correct, tokens, names, reference):
     better = sum(correct[q][picks[q]] and not correct[q][reference] for q in ids)
     worse = sum(correct[q][reference] and not correct[q][picks[q]] for q in ids)
     share = Counter(names[picks[q]] for q in ids)
-    print(f"  {label:<12} accuracy {100 * accuracy:5.1f}, mean tokens {mean:>7,.0f}, "
-          f"vs fixed {names[reference]} {better} better / {worse} worse; picks "
-          + ", ".join(f"{n} {100 * share[n] / len(ids):.0f}%" for n in names))
+    mix = versus_mix(ids, picks, correct, tokens, names)
+    mix_text = f"; random mix {100 * mix[0]:.1f} ({100 * mix[1]:+.1f}, p {mix[2]:.3f})" if mix else ""
+    print(
+        f"  {label:<12} accuracy {100 * accuracy:5.1f}, mean tokens {mean:>7,.0f}, "
+        f"vs fixed {names[reference]} {better} better / {worse} worse{mix_text}; picks "
+        + ", ".join(f"{n} {100 * share[n] / len(ids):.0f}%" for n in names)
+    )
 
 
 def fit_rungs(X, labels, rows, reference):
@@ -181,18 +248,29 @@ def fit_rungs(X, labels, rows, reference):
 
 
 def predict(models, X, rows):
-    return np.column_stack([np.full(len(rows), m) if isinstance(m, float) else m.predict_proba(X[rows])[:, 1]
-                            for m in models]) if models else np.zeros((len(rows), 0))
+    return (
+        np.column_stack(
+            [np.full(len(rows), m) if isinstance(m, float) else m.predict_proba(X[rows])[:, 1] for m in models]
+        )
+        if models
+        else np.zeros((len(rows), 0))
+    )
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dataset", default="longmemeval_s", choices=list(LADDERS))
     parser.add_argument("--score-cache", default=None)
-    parser.add_argument("--features-only", action="store_true",
-                        help="GPU machine: compute features for every question (loads CPC on cache misses) and stop.")
-    parser.add_argument("--reference", default=None,
-                        help="Rung whose accuracy the gates must keep (default: 4k on LongMemEval, full on LoCoMo).")
+    parser.add_argument(
+        "--features-only",
+        action="store_true",
+        help="GPU machine: compute features for every question (loads CPC on cache misses) and stop.",
+    )
+    parser.add_argument(
+        "--reference",
+        default=None,
+        help="Rung whose accuracy the gates must keep (default: 4k on LongMemEval, full on LoCoMo).",
+    )
     args = parser.parse_args()
 
     if args.features_only:
@@ -202,15 +280,17 @@ def main():
 
     ladder = LADDERS[args.dataset]["mistral"]
     names = [name for name, _ in ladder]
-    budgets = [int(name[:-1]) * 1000 for name in names if name != "full"]
+    budgets = [int(float(name[:-1]) * 1000) for name in names if name != "full"]
     reference = names.index(args.reference or ("full" if args.dataset == "locomo" else "4k"))
     judged = [results(f"logs/judge_runs/eval_longmemeval_{tag}.jsonl") for _, tag in ladder]
     compressed = [results(f"logs/eval_longmemeval_{tag}.jsonl") for _, tag in ladder]
     ids = sorted(set.intersection(*(set(j) for j in judged)))
 
     full = full_history_tokens(args.dataset, set(ids))
-    tokens = {q: [compressed[i][q]["compressed_tokens"] if names[i] != "full" else full[q]
-                  for i in range(len(names))] for q in ids}
+    tokens = {
+        q: [compressed[i][q]["compressed_tokens"] if names[i] != "full" else full[q] for i in range(len(names))]
+        for q in ids
+    }
     correct = {q: [bool(j[q].get("llm_judge_correct")) for j in judged] for q in ids}
     features = features_for(args.dataset, ids, args.score_cache, budgets[-1])
     print(f"{args.dataset}: {len(ids)} questions, reference rung {names[reference]}\n")
@@ -234,14 +314,16 @@ def main():
         # No tau keeps the reference's accuracy: fall back to the reference itself.
         tau = min(options)[1] if options else None
         taus.append(tau)
-        rule_picks.update({q: reference if tau is None else rule_pick(features[q], tau, budgets)
-                           for q in ids if fold[q] == held_out})
+        rule_picks.update(
+            {q: reference if tau is None else rule_pick(features[q], tau, budgets) for q in ids if fold[q] == held_out}
+        )
     print(f"\nRule gate (held-out; tau per fold {taus}, None = falls back to {names[reference]})")
     report("rule", ids, rule_picks, correct, tokens, names, reference)
     print("\nRule gate trade-off (no fitting beyond tau itself)")
     for tau in TAUS[::2]:
-        report(f"tau {tau}", ids, {q: rule_pick(features[q], tau, budgets) for q in ids},
-               correct, tokens, names, reference)
+        report(
+            f"tau {tau}", ids, {q: rule_pick(features[q], tau, budgets) for q in ids}, correct, tokens, names, reference
+        )
 
     # Learned gate, 5 folds; LoCoMo folds by conversation, LongMemEval by question.
     question_text = {q: judged[0][q]["question"] for q in ids}
@@ -249,6 +331,7 @@ def main():
     labels = np.array([[correct[q][i] >= correct[q][reference] for i in range(len(names))] for q in ids], dtype=int)
     groups = [q.split("_")[0] for q in ids]
     from sklearn.model_selection import GroupKFold
+
     learned_picks, thetas = {}, []
     out_of_fold = np.zeros((len(ids), reference))  # each question predicted by a model that never saw it
     for train, test in GroupKFold(n_splits=5).split(X, groups=groups):
@@ -275,8 +358,15 @@ def main():
     report("learned", ids, learned_picks, correct, tokens, names, reference)
     print("\nLearned gate trade-off (out-of-fold predictions, theta swept)")
     for theta in THETAS[::2]:
-        report(f"theta {theta:.2f}", ids, {q: cascade(out_of_fold[k], theta, reference) for k, q in enumerate(ids)},
-               correct, tokens, names, reference)
+        report(
+            f"theta {theta:.2f}",
+            ids,
+            {q: cascade(out_of_fold[k], theta, reference) for k, q in enumerate(ids)},
+            correct,
+            tokens,
+            names,
+            reference,
+        )
 
     ideal = {q: next((i for i in range(len(names)) if correct[q][i] >= correct[q][reference]), reference) for q in ids}
     print("\nIdeal gate (knows the verdicts; upper bound)")
@@ -286,9 +376,23 @@ def main():
     if reference > 0:
         model = fit_rungs(X, labels, np.arange(len(ids)), reference)[0]
         if not isinstance(model, float):
-            names_f = (["log units", "log history tokens", "z1", "z5", "z10", "z20", "z50", "z1-z10",
-                        "log need z>=2", "log need z>=3"] + [f"log count z>={l}" for l in Z_LEVELS]
-                       + ["question words"] + [f"cue: {c}" for c in CUES])
+            names_f = (
+                [
+                    "log units",
+                    "log history tokens",
+                    "z1",
+                    "z5",
+                    "z10",
+                    "z20",
+                    "z50",
+                    "z1-z10",
+                    "log need z>=2",
+                    "log need z>=3",
+                ]
+                + [f"log count z>={level}" for level in Z_LEVELS]
+                + ["question words"]
+                + [f"cue: {c}" for c in CUES]
+            )
             weights = model[-1].coef_[0]
             print(f"\nLargest standardized weights for 'P({names[0]} is enough)':")
             for weight, name in sorted(zip(weights, names_f), key=lambda pair: -abs(pair[0]))[:8]:

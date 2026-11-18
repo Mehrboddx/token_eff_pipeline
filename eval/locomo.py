@@ -64,8 +64,9 @@ def _turn_text(turn):
 def conversation_items(sample):
     conversation = sample["conversation"]
     speaker_a = conversation["speaker_a"]
-    numbers = sorted(int(key.split("_")[1]) for key in conversation
-                     if re.fullmatch(r"session_\d+", key) and conversation[key])
+    numbers = sorted(
+        int(key.split("_")[1]) for key in conversation if re.fullmatch(r"session_\d+", key) and conversation[key]
+    )
     sample_id = sample["sample_id"]
     session_ids = [f"{sample_id}_S{number}" for number in numbers]
     time_labels = [conversation.get(f"session_{number}_date_time") for number in numbers]
@@ -77,32 +78,41 @@ def conversation_items(sample):
         turns = []
         for turn in conversation[f"session_{number}"]:
             match = _DIA_ID.fullmatch(turn.get("dia_id", ""))
-            turns.append(((int(match.group(1)), int(match.group(2))) if match else None, {
-                "role": "user" if turn["speaker"] == speaker_a else "assistant",
-                "speaker": turn["speaker"],
-                "content": _turn_text(turn),
-                "has_answer": False,
-            }))
+            turns.append(
+                (
+                    (int(match.group(1)), int(match.group(2))) if match else None,
+                    {
+                        "role": "user" if turn["speaker"] == speaker_a else "assistant",
+                        "speaker": turn["speaker"],
+                        "content": _turn_text(turn),
+                        "has_answer": False,
+                    },
+                )
+            )
         base_sessions.append(turns)
 
     items = []
     for index, qa in enumerate(sample["qa"]):
         question_type = CATEGORIES[qa["category"]]
         wanted = evidence_ids(qa.get("evidence") or [])
-        sessions = [[dict(turn, has_answer=True) if key in wanted else turn for key, turn in session]
-                    for session in base_sessions]
+        sessions = [
+            [dict(turn, has_answer=True) if key in wanted else turn for key, turn in session]
+            for session in base_sessions
+        ]
         answer = ADVERSARIAL_ANSWER if question_type == "adversarial" else str(qa["answer"])
-        items.append({
-            "question_id": f"{sample_id}_q{index:03d}",
-            "question_type": question_type,
-            "question": qa["question"],
-            "answer": answer,
-            "question_date": None,
-            "haystack_sessions": sessions,
-            "haystack_session_ids": session_ids,
-            "session_time_labels": time_labels,
-            "answer_session_ids": [f"{sample_id}_S{session}" for session in sorted({s for s, _ in wanted})],
-        })
+        items.append(
+            {
+                "question_id": f"{sample_id}_q{index:03d}",
+                "question_type": question_type,
+                "question": qa["question"],
+                "answer": answer,
+                "question_date": None,
+                "haystack_sessions": sessions,
+                "haystack_session_ids": session_ids,
+                "session_time_labels": time_labels,
+                "answer_session_ids": [f"{sample_id}_S{session}" for session in sorted({s for s, _ in wanted})],
+            }
+        )
     return items
 
 

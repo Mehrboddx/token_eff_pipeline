@@ -18,25 +18,24 @@ top candidates' embeddings are stored beside the scores on first use.
 
 import argparse
 import json
-import sys
 import time
 from dataclasses import asdict, replace
 from pathlib import Path
 
+from core.console import utf8_console
 from core.selection import SelectionConfig
 from eval.evidence import exact_evidence_recall, summarize_recall
 from eval.longmemeval import (
+    CompressionSettings,
     build_tokenwise,
     load_decompositions,
     load_longmemeval,
+    make_runner,
     retrieval_queries,
     seed_memory_from_haystack,
-    CompressionSettings,
-    make_runner,
 )
 
-if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+utf8_console()
 
 
 def grid(has_decompositions, has_embeddings):
@@ -52,11 +51,15 @@ def grid(has_decompositions, has_embeddings):
         ("mmr0.5", replace(base, mmr_lambda=0.5), False),
         ("mmr1", replace(base, mmr_lambda=1.0), False),
         ("mmr2", replace(base, mmr_lambda=2.0), False),
-        *([
-            ("mmr0.5-semantic", replace(base, mmr_lambda=0.5, mmr_similarity="semantic"), False),
-            ("mmr1-semantic", replace(base, mmr_lambda=1.0, mmr_similarity="semantic"), False),
-            ("mmr2-semantic", replace(base, mmr_lambda=2.0, mmr_similarity="semantic"), False),
-        ] if has_embeddings else []),
+        *(
+            [
+                ("mmr0.5-semantic", replace(base, mmr_lambda=0.5, mmr_similarity="semantic"), False),
+                ("mmr1-semantic", replace(base, mmr_lambda=1.0, mmr_similarity="semantic"), False),
+                ("mmr2-semantic", replace(base, mmr_lambda=2.0, mmr_similarity="semantic"), False),
+            ]
+            if has_embeddings
+            else []
+        ),
         ("recency0.25", replace(base, recency_weight=0.25), False),
         ("recency0.5", replace(base, recency_weight=0.5), False),
         ("recency1", replace(base, recency_weight=1.0), False),
@@ -104,22 +107,31 @@ def main():
     parser.add_argument("--sentence-threshold", type=int, default=20)
     parser.add_argument("--recent-turns", type=int, default=4)
     parser.add_argument("--min-unit-words", type=int, default=4)
-    parser.add_argument("--configs", default=None,
-                        help="Custom configs instead of the default single-factor grid, e.g. "
-                             "\"a=window:1,pair_turns:true;b=top_sessions:5,multiquery:true\".")
+    parser.add_argument(
+        "--configs",
+        default=None,
+        help="Custom configs instead of the default single-factor grid, e.g. "
+        '"a=window:1,pair_turns:true;b=top_sessions:5,multiquery:true".',
+    )
     parser.add_argument("--out", default=None, help="Write the summary table as JSON here.")
     args = parser.parse_args()
 
     decompositions = load_decompositions(args.decompositions)
     configs = (
-        parse_configs(args.configs, bool(decompositions)) if args.configs
+        parse_configs(args.configs, bool(decompositions))
+        if args.configs
         else grid(bool(decompositions), has_embeddings=args.compressor == "cpc")
     )
     settings = CompressionSettings(args.sentence_threshold, args.token_budget, args.recent_turns, args.min_unit_words)
     tokenwise = build_tokenwise(
-        args.compressor, cpc_max_seq_length=args.cpc_max_seq_length, cpc_preset=args.cpc_preset,
-        score_cache=args.score_cache, cpc_attention=args.cpc_attention,
+        args.compressor,
+        cpc_max_seq_length=args.cpc_max_seq_length,
+        cpc_preset=args.cpc_preset,
+        score_cache=args.score_cache,
+        cpc_attention=args.cpc_attention,
     )
+    if tokenwise is None:
+        raise SystemExit("ablations need a compressor, not --compressor none")
 
     question_types = args.question_types.split(",") if args.question_types else None
     items = load_longmemeval(limit=args.limit, seed=args.seed, question_types=question_types)
@@ -137,23 +149,29 @@ def main():
         for name, config, multi_query in configs:
             if candidates is None:
                 evidence = exact_evidence_recall(memory, item, None, "full_history")
-                rows[name].append({"question_type": item["question_type"], "evidence": evidence, "compressed_tokens": None})
+                rows[name].append(
+                    {"question_type": item["question_type"], "evidence": evidence, "compressed_tokens": None}
+                )
                 continue
             units, cutoff = candidates
             queries = retrieval_queries(item, decompositions if multi_query else None)
             tokenwise.selection = config
             result = tokenwise.compress_units(queries[0], settings.token_budget, units, extra_queries=queries[1:])
             last = {"cutoff_index": cutoff, "result": result, "candidates": len(units)}
-            rows[name].append({
-                "question_type": item["question_type"],
-                "evidence": exact_evidence_recall(memory, item, last, "compressed_history"),
-                "compressed_tokens": result.tokens,
-            })
+            rows[name].append(
+                {
+                    "question_type": item["question_type"],
+                    "evidence": exact_evidence_recall(memory, item, last, "compressed_history"),
+                    "compressed_tokens": result.tokens,
+                }
+            )
 
         if index % 25 == 0 or index == len(items):
             elapsed = time.monotonic() - started
-            print(f"  {index}/{len(items)} questions ({elapsed:.0f}s, ~{elapsed / index * (len(items) - index):.0f}s left)",
-                  flush=True)
+            print(
+                f"  {index}/{len(items)} questions ({elapsed:.0f}s, ~{elapsed / index * (len(items) - index):.0f}s left)",
+                flush=True,
+            )
 
     summaries = {}
     for name, config, multi_query in configs:
@@ -164,13 +182,18 @@ def main():
         }
 
     focus = ["temporal-reasoning", "knowledge-update", "multi-session"]
-    print(f"\n{'config':24} {'turn':>6} {'all-ev':>6} {'sess':>6} {'tokens':>6}   " + "  ".join(f"{t[:10]:>10}" for t in focus))
+    print(
+        f"\n{'config':24} {'turn':>6} {'all-ev':>6} {'sess':>6} {'tokens':>6}   "
+        + "  ".join(f"{t[:10]:>10}" for t in focus)
+    )
     for name, summary in summaries.items():
         overall = summary["recall"]["overall"]
         by_type = summary["recall"]["by_type"]
         cells = "  ".join(f"{(by_type.get(t) or {}).get('turn_recall') or 0:10.1%}" for t in focus)
-        print(f"{name:24} {overall['turn_recall']:6.1%} {overall['all_evidence_kept']:6.1%} "
-              f"{overall['session_recall']:6.1%} {overall['mean_tokens']:6.0f}   {cells}")
+        print(
+            f"{name:24} {overall['turn_recall']:6.1%} {overall['all_evidence_kept']:6.1%} "
+            f"{overall['session_recall']:6.1%} {overall['mean_tokens']:6.0f}   {cells}"
+        )
 
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)

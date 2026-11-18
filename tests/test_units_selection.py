@@ -7,7 +7,7 @@ _fake_genai.install()
 from core.memory import Memory  # noqa: E402
 from core.scorers import BM25Scorer, LexicalScorer  # noqa: E402
 from core.selection import SelectionConfig, fuse_scores, select_units  # noqa: E402
-from core.tokenWise import TokenWise  # noqa: E402
+from core.token_wise import TokenWise  # noqa: E402
 from core.units import Unit, prepare_units, render_units  # noqa: E402
 
 
@@ -22,23 +22,29 @@ def entry(text, entry_index, role="user", session=None, time=None):
 def make_units(texts, sessions=None, roles=None, entries=None):
     units = []
     for index, text in enumerate(texts):
-        units.append(Unit(
-            id=index,
-            text=text,
-            role=(roles or ["user"] * len(texts))[index],
-            entry_index=(entries or list(range(len(texts))))[index],
-            session=(sessions or [None] * len(texts))[index],
-            tokens=count_words(text),
-        ))
+        units.append(
+            Unit(
+                id=index,
+                text=text,
+                role=(roles or ["user"] * len(texts))[index],
+                entry_index=(entries or list(range(len(texts))))[index],
+                session=(sessions or [None] * len(texts))[index],
+                tokens=count_words(text),
+            )
+        )
     return units
 
 
 class MemorySplittingTests(unittest.TestCase):
     def test_prefix_is_shown_to_the_model_but_never_scored(self):
         memory = Memory()
-        memory.add_user_message("I went to MoMA. It was great!", meta={"session": 0}, prefix="(from 3 days before this question) ")
+        memory.add_user_message(
+            "I went to MoMA. It was great!", meta={"session": 0}, prefix="(from 3 days before this question) "
+        )
 
-        self.assertEqual(memory.get_history()[0].parts[0].text, "(from 3 days before this question) I went to MoMA. It was great!")
+        self.assertEqual(
+            memory.get_history()[0].parts[0].text, "(from 3 days before this question) I went to MoMA. It was great!"
+        )
         self.assertEqual(memory.get_sentences(), ["I went to MoMA.", "It was great!"])
         self.assertEqual(memory.get_sentence_entries()[0]["meta"], {"session": 0})
 
@@ -74,7 +80,9 @@ class PrepareUnitsTests(unittest.TestCase):
         self.assertEqual([(unit.text, unit.entry_index) for unit in units], [("I adopted a cat named Luna.", 0)])
 
     def test_metadata_is_carried(self):
-        units = prepare_units([entry("A sentence with enough words.", 5, session=3, time="2 days before this question")], count_words)
+        units = prepare_units(
+            [entry("A sentence with enough words.", 5, session=3, time="2 days before this question")], count_words
+        )
         self.assertEqual((units[0].session, units[0].time, units[0].tokens), (3, "2 days before this question", 5))
 
 
@@ -141,11 +149,13 @@ class SelectTests(unittest.TestCase):
         self.assertEqual(select_units(units, [1.0, 1.0, 0.0], 3, count_words), [1])
 
     def test_mmr_skips_near_duplicates(self):
-        units = make_units([
-            "March 20 2023 2 pm slot",
-            "March 20 2023 2 pm slot again",
-            "The dentist is on Elm Street",
-        ])
+        units = make_units(
+            [
+                "March 20 2023 2 pm slot",
+                "March 20 2023 2 pm slot again",
+                "The dentist is on Elm Street",
+            ]
+        )
         scores = [3.0, 2.9, 2.0]
         plain = select_units(units, scores, 15, count_words)
         diverse = select_units(units, scores, 15, count_words, SelectionConfig(mmr_lambda=2.0))
@@ -161,8 +171,9 @@ class SelectTests(unittest.TestCase):
         embeddings = {0: np.array([1.0, 0.1, 0.0]), 1: np.array([0.98, 0.12, 0.0]), 2: np.array([0.0, 0.0, 1.0])}
         budget = 10
         lexical = select_units(units, scores, budget, count_words, SelectionConfig(mmr_lambda=2.0))
-        semantic = select_units(units, scores, budget, count_words,
-                                SelectionConfig(mmr_lambda=2.0, mmr_similarity="semantic"), embeddings)
+        semantic = select_units(
+            units, scores, budget, count_words, SelectionConfig(mmr_lambda=2.0, mmr_similarity="semantic"), embeddings
+        )
         self.assertEqual(lexical, [0, 1])
         self.assertEqual(semantic, [0, 2])
 
@@ -230,8 +241,11 @@ class TokenWiseTests(unittest.TestCase):
                 return [[1.0] * len(units) for _ in queries]
 
         scorer = Scorer()
-        result = TokenWise(model=scorer).compress_units("q", 50, make_units(["a b c", "d e f"]), extra_queries=["s1", "q", "s1"])
+        result = TokenWise(model=scorer).compress_units(
+            "q", 50, make_units(["a b c", "d e f"]), extra_queries=["s1", "q", "s1"]
+        )
         self.assertEqual(scorer.calls, [["q", "s1"]])
+        assert result.selected is not None
         self.assertEqual(len(result.selected), 2)
 
 
