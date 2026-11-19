@@ -1,0 +1,3 @@
+# Baseline: the stock mini-swe-agent v2 (LLM summary compaction), token ledger only.
+agent:
+  cpc_arm: none

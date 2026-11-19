@@ -1,0 +1,6 @@
+# Messages compressed, and history compaction done by the compressor instead of an LLM summary.
+agent:
+  cpc_arm: full
+  message_ratio: 0.5
+  message_min_tokens: 150
+  history_budget: 6000

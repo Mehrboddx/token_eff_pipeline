@@ -6,3 +6,6 @@ replicate/eval_results.csv
 .env
 replicate/output
 *.pptx
+# CooperBench (scripts/cooperbench.sh): pinned clone, its venv, and the LLM proxy key
+third_party/
+.llm_proxy_key

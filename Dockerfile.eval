@@ -35,6 +35,7 @@ RUN python -m spacy download en_core_web_sm
 COPY core/ ./core/
 COPY eval/ ./eval/
 COPY analysis/ ./analysis/
+COPY integrations/ ./integrations/
 COPY replicate/cpc_compressor.py ./replicate/cpc_compressor.py
 
 ENTRYPOINT ["python", "-m", "eval.longmemeval"]
