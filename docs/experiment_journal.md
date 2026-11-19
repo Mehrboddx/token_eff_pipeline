@@ -438,3 +438,29 @@ Temperature-0 accuracy (82.3 mean) is level with the default (83.0 / 80.2).
 an effect counts only if it beats both (or McNemar p < 0.05 against each). For the paper, the
 main configurations should be re-answered at temperature 0 (≥ 2 runs each). The stronger-reader
 gains above (+4.2, +5.4) are several times this noise.
+
+## 2026-11-18 · Why fusion keeps more evidence (full analysis)
+
+`eval/fusion_analysis.py` over every question, from cached scores. It re-runs selection under
+three orderings of the same units and budget: CPC alone, Provence alone, and the fusion
+(W 0.25). The fused selection reproduces the runs' evidence counts on every question (1540/1540
+LoCoMo, 500/500 LongMemEval).
+
+| | CPC | Provence | fused |
+|---|---|---|---|
+| LoCoMo 4k, evidence recall | 91.7 | 95.5 | 95.5 |
+| LoCoMo 2k | 82.8 | 92.6 | 91.9 |
+| LongMemEval 4k | 97.5 | 82.1 | 98.5 |
+| LongMemEval 1k | 90.7 | 68.9 | 93.2 |
+
+The two scorers barely agree. Their per-question rank correlation has a median of 0.20 on LoCoMo
+and -0.02 on LongMemEval, and the Pearson correlation of each evidence turn's best rank under the
+two scorers is 0.39 and 0.09. Fusion keeps nearly every turn both scorers keep, and most turns only
+one of them keeps:
+- LoCoMo 2k: 83% of the CPC-only turns and 78% of the Provence-only turns;
+- LongMemEval 1k: 92% of the CPC-only turns and 100% of the Provence-only turns.
+
+So on each benchmark fusion follows the stronger scorer and adds most of the other's unique
+evidence: Provence is the stronger one on LoCoMo (multi-hop 73.5 → 90.9 at 2k), CPC on
+LongMemEval. The one loss: on LongMemEval single-session-preference, Provence is nearly blind
+(2.3) and fusion drops below CPC (90.9 → 75.0 at 1k, n=30).
