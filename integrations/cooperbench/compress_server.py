@@ -14,10 +14,10 @@ agent's own transcript.
     -> {"text": ..., "tokens_in": ..., "tokens_out": ..., "units_in": ..., "units_kept": ..., "ms": ...}
     GET /health
 
-Units are built the same way for every input: each entry is split into
-lines, each line into sentences, and fragments under four words are merged
-into a neighbour (core.units.prepare_units). Lines keep code and tool
-output intact as units, which sentence splitting alone would not.
+Units are built the same way for every input (entries_to_units): lines,
+split into sentences where a line holds several; pieces under four words
+join the unit before them, by a newline, so code and tool output keep
+their layout. tokens_in is the raw text the agent would have read.
 
     python -m integrations.cooperbench.compress_server --port 8765
 """
@@ -31,20 +31,44 @@ from typing import Any
 
 from core.memory import split_sentences
 from core.selection import SelectionConfig
-from core.units import Unit, prepare_units
+from core.units import Unit, word_count
 from integrations.cooperbench.render import render_excerpt
 
 
-def entries_to_units(entries, count_tokens):
-    sentences = []
+def entries_to_units(entries, count_tokens, min_words: int = 4, max_words: int = 60) -> list[Unit]:
+    """Entries -> scorable units, the same way for every input.
+
+    Each line is a piece (split further into sentences when it holds
+    several), with its indentation kept. A piece under `min_words` words
+    (`}`, `import os`, "Thanks!") joins the unit before it, by a newline
+    when it is its own line, so code keeps its layout and short lines are
+    not nearly-free picks under a budget; a unit stops absorbing pieces at
+    `max_words`. Exact repeats keep only their first occurrence."""
+    units: list[Unit] = []
+    seen: set[tuple[str, str]] = set()
     for index, entry in enumerate(entries):
         role = entry.get("role", "user")
+        pieces: list[tuple[str, bool]] = []  # (text, starts a line)
         for line in (entry.get("text") or "").splitlines():
             if not line.strip():
                 continue
-            for sentence in split_sentences(line):
-                sentences.append({"role": role, "text": sentence, "entry_index": index, "meta": {}})
-    return prepare_units(sentences, count_tokens)
+            sentences = split_sentences(line)
+            if len(sentences) <= 1:
+                sentences = [line.rstrip()]
+            pieces.extend((sentence, k == 0) for k, sentence in enumerate(sentences))
+        merged: list[str] = []
+        for text, new_line in pieces:
+            if merged and word_count(text) < min_words and word_count(merged[-1]) < max_words:
+                merged[-1] += ("\n" if new_line else " ") + text
+            else:
+                merged.append(text)
+        for text in merged:
+            key = (role, text.strip())
+            if key in seen:
+                continue
+            seen.add(key)
+            units.append(Unit(id=len(units), text=text, role=role, entry_index=index, tokens=count_tokens(text)))
+    return units
 
 
 class Compressor:
@@ -62,25 +86,23 @@ class Compressor:
     def compress(self, request: dict) -> dict:
         start = time.perf_counter()
         count = self.tokenwise.count_tokens
-        units: list[Unit] = entries_to_units(request.get("entries") or [], count)
-        tokens_in = sum(unit.tokens for unit in units)
+        entries = request.get("entries") or []
+        units = entries_to_units(entries, count)
+        tokens_in = sum(count(entry.get("text") or "") for entry in entries)  # what the agent would have read
         if "budget" in request:
             budget = int(request["budget"])
         else:
             budget = max(int(request.get("min_tokens", 0)), int(tokens_in * float(request.get("ratio", 1.0))))
 
-        entries = request.get("entries") or []
         if tokens_in <= budget or not units:
             # Already fits: nothing to drop, no model call, and the text goes back untouched.
-            text = "\n\n".join(entry.get("text") or "" for entry in entries) if len(entries) == 1 else None
-            text = text if text is not None else render_excerpt(units, entries)
+            text = entries[0].get("text") or "" if len(entries) == 1 else render_excerpt(units, entries)
             return self._result(text, tokens_in, units, units, budget, start)
-        else:
-            with self.lock:
-                result = self.tokenwise.compress_units(
-                    request.get("query") or "", budget, units, request.get("extra_queries") or ()
-                )
-            selected = result.selected or []
+        with self.lock:
+            result = self.tokenwise.compress_units(
+                request.get("query") or "", budget, units, request.get("extra_queries") or ()
+            )
+        selected = result.selected or []
         return self._result(render_excerpt(selected, entries), tokens_in, units, selected, budget, start)
 
     def _result(self, text, tokens_in, units, selected, budget, start) -> dict:

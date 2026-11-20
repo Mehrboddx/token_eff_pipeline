@@ -25,7 +25,7 @@ What is scored against what:
 - **Messages:** scored against the receiving agent's task and its latest step.
 - **History:** scored against the latest step and the task.
 
-Units are built the same way for every input: each line is split into sentences, and fragments under four words
+Units are built the same way for every input: lines (split into sentences where a line holds several), indentation kept; pieces under four words
 are merged into a neighbour. The scorers and the fusion weight (W = 0.25) are those of the LongMemEval/LoCoMo
 runs.
 

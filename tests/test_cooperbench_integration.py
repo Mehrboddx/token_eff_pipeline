@@ -55,10 +55,21 @@ class TestUnits(unittest.TestCase):
             {"role": "tool", "text": "def parse(text):\n    return tokenize(text) if text else []"},
         ]
         units = entries_to_units(entries, count)
-        # "def parse(text):" is under four words, so it merges with the line after it.
-        self.assertEqual([unit.entry_index for unit in units], [0, 0, 1])
+        self.assertEqual([unit.entry_index for unit in units], [0, 0, 1, 1])
         self.assertIn("sed -n 1,40p src/parser.py", units[1].text)
-        self.assertTrue(units[2].text.startswith("def parse(text): return tokenize"))
+        self.assertEqual(units[3].text, "    return tokenize(text) if text else []")  # indentation kept
+
+    def test_short_lines_join_the_previous_unit_by_newline(self):
+        code = (
+            "def load_config(path, strict=False):\n    import os\n    import re\n}\nreturn the parsed config to caller"
+        )
+        units = entries_to_units([{"role": "tool", "text": code}], count)
+        self.assertEqual(units[0].text, "def load_config(path, strict=False):\n    import os\n    import re\n}")
+        self.assertEqual(len(units), 2)
+
+    def test_exact_repeats_are_dropped(self):
+        text = "\n".join(["the build failed on line twelve again"] * 3 + ["a different line of output here"])
+        self.assertEqual(len(entries_to_units([{"role": "tool", "text": text}], count)), 2)
 
     def test_blank_lines_are_skipped(self):
         units = entries_to_units(
@@ -98,6 +109,15 @@ class TestService(unittest.TestCase):
         )
         self.assertEqual(result["text"], text)
         self.assertEqual(compressor.tokenwise.calls, 0)
+
+    def test_budget_comes_from_the_raw_text_not_the_deduplicated_units(self):
+        compressor = fake_compressor()
+        text = "\n".join(["I take parser.py and you take lexer.py please"] * 40)
+        result = compressor.compress(
+            {"entries": [{"role": "colleague", "text": text}], "query": "parser", "ratio": 0.5, "min_tokens": 150}
+        )
+        self.assertEqual(result["tokens_in"], count(text))
+        self.assertEqual(compressor.tokenwise.calls, 1)  # 360 words > 150: compressed, though one unique line
 
     def test_long_message_is_cut_to_ratio(self):
         compressor = fake_compressor()
