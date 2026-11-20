@@ -8,9 +8,12 @@ and how many LLM tokens does it save?
 
 ## Agent and arms
 
-The harness is CooperBench's `mini_swe_agent_v2`. It is the benchmark's default and, in the authors' `core`-subset
-comparison, the strongest of the four harnesses (6/10, against 5/10 for `claude_code`, 5/10 for `codex` and 4/10
-for `openhands_sdk`). The model is the benchmark's default, `gemini-3-flash-preview`. The stock agent already
+The harness is CooperBench's `mini_swe_agent_v2`. It is the benchmark's default. In the repository's own
+`core`-subset comparison
+([docs/BENCHMARK_RESULTS.md](https://github.com/cooperbench/CooperBench/blob/63b9d44/docs/BENCHMARK_RESULTS.md)) it is
+the strongest of the four harnesses: 6/10, against 5/10 for `claude_code`, 5/10 for `codex` and 4/10 for
+`openhands_sdk`. That comparison used the `team` setting with GPT-5.5 (Claude Sonnet 4.5 for `claude_code`), not the
+coop setting run here. The model is the benchmark's default, `gemini-3-flash-preview`. The stock agent already
 compresses its own history: once a prompt reaches 28k tokens, an extra LLM call summarises everything except the
 last two turns.
 
