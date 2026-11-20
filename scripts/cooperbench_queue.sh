@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Unattended CooperBench experiment, start to finish, on the GPU machine:
 #   1. the smoke pair in all three arms, and a sanity check of its logs;
-#   2. the flash subset (50 pairs), one arm after another;
+#   2. the flash subset (50 pairs), one arm after another (arms/: none, messages, full,
+#      and none_early / full_early, which compact at 12k prompt tokens instead of 28k);
 #   3. the report, then the experiment's containers are removed (GPU freed).
 # A watchdog stops everything this experiment started (label cpc-cb=1, never anyone
 # else's containers) once the LLM spend in the ledgers passes $SPEND_CAP.
@@ -12,10 +13,10 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CB="$ROOT/scripts/cooperbench.sh"
 LOG_ROOT="${LOG_ROOT:-$ROOT/logs_cooperbench}"
-SPEND_CAP="${SPEND_CAP:-300}"
+SPEND_CAP="${SPEND_CAP:-60}"  # USD; the smoke pair cost $0.18, so 5 arms x 50 pairs come to about $45-55
 SUBSET="${SUBSET:-flash}"
 SMOKE=(-r dottxt_ai_outlines_task -t 1655 -f 6,7)
-ARMS=(none messages full)
+ARMS=(none messages full none_early full_early)
 STOP_FILE="$ROOT/queue_out/cb_queue.stop"  # touch it to stop after the current step
 cd "$ROOT"
 mkdir -p queue_out
@@ -60,7 +61,7 @@ for arm in "${ARMS[@]}"; do
   smoke_ok "$arm" || { log "smoke $arm failed the sanity check; stopping before the full runs"; touch "$STOP_FILE"; }
   log "smoke $arm done, spend \$$(spent)"
 done
-bash "$CB" report smoke_none smoke_messages smoke_full > queue_out/cb_smoke_report.txt 2>&1
+bash "$CB" report "${ARMS[@]/#/smoke_}" > queue_out/cb_smoke_report.txt 2>&1
 
 for arm in "${ARMS[@]}"; do
   stop_requested && break
@@ -69,7 +70,9 @@ for arm in "${ARMS[@]}"; do
   log "$SUBSET $arm done, spend \$$(spent)"
 done
 
+# Each compression arm against the baseline with the same compaction trigger.
 bash "$CB" report "${SUBSET}_none" "${SUBSET}_messages" "${SUBSET}_full" > queue_out/cb_report.txt 2>&1
+bash "$CB" report "${SUBSET}_none_early" "${SUBSET}_full_early" >> queue_out/cb_report.txt 2>&1
 kill "$WATCHDOG" 2>/dev/null
 bash "$CB" stop
 log "queue end, spend \$$(spent); report in queue_out/cb_report.txt"

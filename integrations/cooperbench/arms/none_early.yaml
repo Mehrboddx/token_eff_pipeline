@@ -1,0 +1,4 @@
+# Baseline with earlier compaction: the stock LLM summary once a prompt reaches 12k tokens.
+agent:
+  cpc_arm: none
+  compaction_token_trigger: 12000

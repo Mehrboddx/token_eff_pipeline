@@ -1,0 +1,7 @@
+# Our compressor once a prompt reaches 12k tokens (4,000-token budget), plus compressed messages.
+agent:
+  cpc_arm: full
+  compaction_token_trigger: 12000
+  message_ratio: 0.5
+  message_min_tokens: 150
+  history_budget: 4000
