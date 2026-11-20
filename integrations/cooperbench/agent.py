@@ -11,10 +11,11 @@ Three arms, picked per run with `agent.cpc_arm` in the --agent-config YAML:
   messages  every message from a colleague is compressed before the
             receiving agent sees it, scored against the receiver's task
             and its latest step. History is handled as in `none`.
-  full      messages as above, and the history compaction is replaced:
+  history   messages verbatim, and the history compaction is replaced:
             instead of an LLM call that summarises the older turns, the
             compressor keeps the verbatim lines most relevant to the task
             and the current step, under a fixed token budget.
+  full      both: messages as in `messages`, history as in `history`.
 
 Every LLM call (agent steps and the stock summary calls) and every
 compression is written to <log_dir>/<agent_id>_ledger.jsonl, so all arms are
@@ -42,7 +43,7 @@ _context = threading.local()  # the adapter's log_dir, for the agent built on th
 
 
 class CpcAgentConfig(AgentConfig):
-    cpc_arm: Literal["none", "messages", "full"] = "none"
+    cpc_arm: Literal["none", "messages", "history", "full"] = "none"
     cpc_url: str = "http://127.0.0.1:8765"
     cpc_timeout: float = 300.0
     message_ratio: float = 0.5
@@ -181,7 +182,7 @@ class CpcAgent(DefaultAgent):
         return {**message, "content": f"(excerpt, {share}% of the original message)\n{result['text']}"}
 
     def _compact_messages(self) -> None:
-        if self.config.cpc_arm != "full":
+        if self.config.cpc_arm not in ("history", "full"):
             super()._compact_messages()
             return
         prefix, conversation = self.messages[:2], self.messages[2:]

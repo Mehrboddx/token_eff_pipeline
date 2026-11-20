@@ -1,0 +1,4 @@
+# Messages verbatim; history compaction done by the compressor instead of an LLM summary.
+agent:
+  cpc_arm: history
+  history_budget: 6000

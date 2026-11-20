@@ -18,7 +18,8 @@ last two turns.
 |---|---|---|
 | `none` (baseline) | verbatim | LLM summary (stock) |
 | `messages` | compressed to 50% (messages of 150 tokens or less untouched) | LLM summary (stock) |
-| `full` | compressed to 50% | compressor keeps the most relevant verbatim lines, 6,000-token budget, no LLM call |
+| `history` | verbatim | compressor keeps the most relevant verbatim lines, 6,000-token budget, no LLM call |
+| `full` | compressed to 50% | as in `history` |
 
 What is scored against what:
 
@@ -30,7 +31,7 @@ are merged into a neighbour. The scorers and the fusion weight (W = 0.25) are th
 runs.
 
 For every agent, every LLM call (agent steps and the stock summary calls) and every compression is logged to
-`<pair log dir>/<agent>_ledger.jsonl`. All three arms are therefore measured identically.
+`<pair log dir>/<agent>_ledger.jsonl`. All arms are therefore measured identically.
 
 ## Files
 
