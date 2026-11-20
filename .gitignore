@@ -10,3 +10,4 @@ replicate/output
 third_party/
 .llm_proxy_key
 .gcp_credentials.json
+logs_cooperbench/

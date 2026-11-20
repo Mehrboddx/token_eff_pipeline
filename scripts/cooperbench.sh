@@ -39,6 +39,8 @@ LLM_KEY_FILE="${LLM_KEY_FILE:-$ROOT/.llm_proxy_key}"
 CONCURRENCY="${CONCURRENCY:-3}"
 EVAL_CONCURRENCY="${EVAL_CONCURRENCY:-3}"
 REDIS_PORT="${REDIS_PORT:-16379}"
+# logs/ is written by the root-run GPU containers, so CooperBench logs live apart, owned by the caller.
+LOG_ROOT="${LOG_ROOT:-$ROOT/logs_cooperbench}"
 export CB_TASK_LIMITS="${TASK_LIMITS:---cpus=2 --memory=8g --cpu-shares=256}"
 DOCKER_BIN="$(command -v docker)"
 DOCKER_GID="$(stat -c %g /var/run/docker.sock)"
@@ -50,6 +52,7 @@ else
 fi
 
 runner() {  # run a command in the CooperBench runner container, as the calling user
+  mkdir -p "$LOG_ROOT"
   local llm=()
   if [[ -f "$GCP_CREDENTIALS" ]]; then
     [[ -n "$VERTEX_PROJECT" ]] || { echo "set VERTEX_PROJECT (or GOOGLE_CLOUD_PROJECT)" >&2; exit 1; }
