@@ -12,7 +12,9 @@
 #   scripts/cooperbench.sh report <baseline> <run>...
 #
 # The agents' LLM is reached at $LLM_BASE (OpenAI-compatible: a LiteLLM proxy
-# in front of Vertex AI), with the key read from $LLM_KEY_FILE.
+# in front of Vertex AI), with the key read from $LLM_KEY_FILE. The proxied model
+# name is priced from integrations/cooperbench/pricing.json (Vertex list prices),
+# so costs are tracked and CooperBench's per-agent cost cap ($3, coop.yaml) holds.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -35,7 +37,8 @@ runner() {  # run a command in the CooperBench runner container, as the calling 
     -v /var/run/docker.sock:/var/run/docker.sock -v "$DOCKER_BIN:/usr/bin/docker:ro" \
     -v "$ROOT:$ROOT" -w "$CB_DIR" \
     -e HOME="$ROOT/third_party/home" -e PYTHONPATH="$ROOT" \
-    -e OPENAI_API_BASE="$LLM_BASE" -e OPENAI_API_KEY="$key" -e MSWEA_COST_TRACKING=ignore_errors \
+    -e OPENAI_API_BASE="$LLM_BASE" -e OPENAI_API_KEY="$key" \
+    -e LITELLM_MODEL_REGISTRY_PATH="$ROOT/integrations/cooperbench/pricing.json" \
     python:3.12-slim "$@"
 }
 
