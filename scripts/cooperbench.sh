@@ -12,8 +12,9 @@
 #   scripts/cooperbench.sh report <baseline> <run>...
 #   scripts/cooperbench.sh stop                   # remove this experiment's service and Redis containers
 #
-# LLM access, kept local to this experiment: a Vertex AI service-account key at
-# $VERTEX_KEY (default .vertex_sa.json in the repo root, git-ignored, mode 600) is
+# LLM access, kept local to this experiment: Google credentials (a gcloud
+# application-default credentials file or a service-account key) at $GCP_CREDENTIALS
+# (default .gcp_credentials.json in the repo root, git-ignored, mode 600) are
 # mounted read-only into the runner container only -- nothing global (gcloud
 # config, shell profile, other users' env or files) is read or changed. Without
 # a key, the agents use an OpenAI-compatible endpoint at $LLM_BASE instead.
@@ -30,7 +31,8 @@ CB_COMMIT="${CB_COMMIT:-63b9d44}"
 CB_DIR="$ROOT/third_party/CooperBench"
 VENV="$ROOT/third_party/cb-venv"
 GPU="${GPU:-1}"
-VERTEX_KEY="${VERTEX_KEY:-$ROOT/.vertex_sa.json}"
+GCP_CREDENTIALS="${GCP_CREDENTIALS:-$ROOT/.gcp_credentials.json}"
+VERTEX_PROJECT="${VERTEX_PROJECT:-${GOOGLE_CLOUD_PROJECT:-}}"
 VERTEX_LOCATION="${VERTEX_LOCATION:-global}"
 LLM_BASE="${LLM_BASE:-http://127.0.0.1:14873}"
 LLM_KEY_FILE="${LLM_KEY_FILE:-$ROOT/.llm_proxy_key}"
@@ -41,7 +43,7 @@ export CB_TASK_LIMITS="${TASK_LIMITS:---cpus=2 --memory=8g --cpu-shares=256}"
 DOCKER_BIN="$(command -v docker)"
 DOCKER_GID="$(stat -c %g /var/run/docker.sock)"
 
-if [[ -f "$VERTEX_KEY" ]]; then
+if [[ -f "$GCP_CREDENTIALS" ]]; then
   MODEL="${MODEL:-vertex_ai/gemini-3-flash-preview}"
 else
   MODEL="${MODEL:-openai/gemini-3-flash-preview}"
@@ -49,12 +51,11 @@ fi
 
 runner() {  # run a command in the CooperBench runner container, as the calling user
   local llm=()
-  if [[ -f "$VERTEX_KEY" ]]; then
-    local project
-    project="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["project_id"])' "$VERTEX_KEY")"
-    llm=(-v "$VERTEX_KEY:/run/secrets/vertex_sa.json:ro"
-         -e GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/vertex_sa.json
-         -e VERTEXAI_PROJECT="${VERTEX_PROJECT:-$project}" -e VERTEXAI_LOCATION="$VERTEX_LOCATION")
+  if [[ -f "$GCP_CREDENTIALS" ]]; then
+    [[ -n "$VERTEX_PROJECT" ]] || { echo "set VERTEX_PROJECT (or GOOGLE_CLOUD_PROJECT)" >&2; exit 1; }
+    llm=(-v "$GCP_CREDENTIALS:/run/secrets/gcp_credentials.json:ro"
+         -e GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/gcp_credentials.json
+         -e VERTEXAI_PROJECT="$VERTEX_PROJECT" -e VERTEXAI_LOCATION="$VERTEX_LOCATION")
   elif [[ -f "$LLM_KEY_FILE" ]]; then
     llm=(-e OPENAI_API_BASE="$LLM_BASE" -e OPENAI_API_KEY="$(cat "$LLM_KEY_FILE")")
   fi
