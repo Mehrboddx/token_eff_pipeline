@@ -24,6 +24,8 @@ measured the same way.
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import threading
 import time
 import urllib.request
@@ -32,6 +34,7 @@ from typing import Any, Literal
 
 from cooperbench.agents.mini_swe_agent_v2 import adapter as msa_adapter
 from cooperbench.agents.mini_swe_agent_v2.agents.default import AgentConfig, DefaultAgent
+from cooperbench.agents.mini_swe_agent_v2.environments import docker as msa_docker
 
 from integrations.cooperbench.render import message_text
 
@@ -245,3 +248,15 @@ def install() -> None:
     run._cpc_installed = True  # type: ignore[attr-defined]
     runner.run = run
     msa_adapter.DefaultAgent = CpcAgent
+
+    # On a shared machine, task containers get the resource limits in CB_TASK_LIMITS
+    # (e.g. "--cpus=2 --memory=8g --cpu-shares=256"), the same for every arm.
+    limits = shlex.split(os.environ.get("CB_TASK_LIMITS", ""))
+    if limits:
+        start = msa_docker.DockerEnvironment._start_container
+
+        def limited_start(self: Any) -> Any:
+            self.config.run_args = [*self.config.run_args, *(arg for arg in limits if arg not in self.config.run_args)]
+            return start(self)
+
+        msa_docker.DockerEnvironment._start_container = limited_start

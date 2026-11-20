@@ -3,18 +3,26 @@
 # Everything runs in Docker on the GPU machine:
 #   - the compressor service in the existing longmemeval-eval image, on one GPU;
 #   - CooperBench's runner in python:3.12-slim, driving the host's Docker
-#     (task containers, Redis) through the mounted socket.
+#     (task containers, its own Redis) through the mounted socket.
 #
 #   scripts/cooperbench.sh setup                  # clone CooperBench (pinned), venv, pull flash task images
 #   scripts/cooperbench.sh server                 # start the compressor service (GPU $GPU, port 8765)
 #   scripts/cooperbench.sh run <arm> <name> [cooperbench run args...]
 #   scripts/cooperbench.sh eval <name> [cooperbench eval args...]
 #   scripts/cooperbench.sh report <baseline> <run>...
+#   scripts/cooperbench.sh stop                   # remove this experiment's service and Redis containers
 #
-# The agents' LLM is reached at $LLM_BASE (OpenAI-compatible: a LiteLLM proxy
-# in front of Vertex AI), with the key read from $LLM_KEY_FILE. The proxied model
-# name is priced from integrations/cooperbench/pricing.json (Vertex list prices),
-# so costs are tracked and CooperBench's per-agent cost cap ($3, coop.yaml) holds.
+# LLM access, kept local to this experiment: a Vertex AI service-account key at
+# $VERTEX_KEY (default .vertex_sa.json in the repo root, git-ignored, mode 600) is
+# mounted read-only into the runner container only -- nothing global (gcloud
+# config, shell profile, other users' env or files) is read or changed. Without
+# a key, the agents use an OpenAI-compatible endpoint at $LLM_BASE instead.
+# Model prices come from integrations/cooperbench/pricing.json, so costs are
+# tracked and CooperBench's per-agent cost cap ($3, coop.yaml) holds.
+#
+# Shared machine: this experiment uses its own Redis (127.0.0.1:$REDIS_PORT, not
+# the default 6379), GPU $GPU only, few concurrent pairs, and task containers
+# with CPU/memory limits and a low CPU share ($TASK_LIMITS).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -22,24 +30,49 @@ CB_COMMIT="${CB_COMMIT:-63b9d44}"
 CB_DIR="$ROOT/third_party/CooperBench"
 VENV="$ROOT/third_party/cb-venv"
 GPU="${GPU:-1}"
-MODEL="${MODEL:-openai/gemini-3-flash-preview}"
+VERTEX_KEY="${VERTEX_KEY:-$ROOT/.vertex_sa.json}"
+VERTEX_LOCATION="${VERTEX_LOCATION:-global}"
 LLM_BASE="${LLM_BASE:-http://127.0.0.1:14873}"
 LLM_KEY_FILE="${LLM_KEY_FILE:-$ROOT/.llm_proxy_key}"
-CONCURRENCY="${CONCURRENCY:-4}"
+CONCURRENCY="${CONCURRENCY:-3}"
+EVAL_CONCURRENCY="${EVAL_CONCURRENCY:-3}"
+REDIS_PORT="${REDIS_PORT:-16379}"
+export CB_TASK_LIMITS="${TASK_LIMITS:---cpus=2 --memory=8g --cpu-shares=256}"
 DOCKER_BIN="$(command -v docker)"
 DOCKER_GID="$(stat -c %g /var/run/docker.sock)"
 
+if [[ -f "$VERTEX_KEY" ]]; then
+  MODEL="${MODEL:-vertex_ai/gemini-3-flash-preview}"
+else
+  MODEL="${MODEL:-openai/gemini-3-flash-preview}"
+fi
+
 runner() {  # run a command in the CooperBench runner container, as the calling user
-  local key=""
-  [[ -f "$LLM_KEY_FILE" ]] && key="$(cat "$LLM_KEY_FILE")"
+  local llm=()
+  if [[ -f "$VERTEX_KEY" ]]; then
+    local project
+    project="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["project_id"])' "$VERTEX_KEY")"
+    llm=(-v "$VERTEX_KEY:/run/secrets/vertex_sa.json:ro"
+         -e GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/vertex_sa.json
+         -e VERTEXAI_PROJECT="${VERTEX_PROJECT:-$project}" -e VERTEXAI_LOCATION="$VERTEX_LOCATION")
+  elif [[ -f "$LLM_KEY_FILE" ]]; then
+    llm=(-e OPENAI_API_BASE="$LLM_BASE" -e OPENAI_API_KEY="$(cat "$LLM_KEY_FILE")")
+  fi
   docker run --rm --network host \
     --user "$(id -u):$(id -g)" --group-add "$DOCKER_GID" \
     -v /var/run/docker.sock:/var/run/docker.sock -v "$DOCKER_BIN:/usr/bin/docker:ro" \
     -v "$ROOT:$ROOT" -w "$CB_DIR" \
-    -e HOME="$ROOT/third_party/home" -e PYTHONPATH="$ROOT" \
-    -e OPENAI_API_BASE="$LLM_BASE" -e OPENAI_API_KEY="$key" \
+    -e HOME="$ROOT/third_party/home" -e PYTHONPATH="$ROOT" -e CB_TASK_LIMITS \
     -e LITELLM_MODEL_REGISTRY_PATH="$ROOT/integrations/cooperbench/pricing.json" \
-    python:3.12-slim "$@"
+    "${llm[@]}" python:3.12-slim "$@"
+}
+
+ensure_redis() {  # this experiment's own Redis, never the default port another user may rely on
+  if [[ -z "$(docker ps -q -f name=^cpc-cb-redis$)" ]]; then
+    docker rm -f cpc-cb-redis >/dev/null 2>&1 || true
+    docker run -d --name cpc-cb-redis -p "127.0.0.1:$REDIS_PORT:6379" redis:alpine >/dev/null
+    sleep 2
+  fi
 }
 
 case "${1:-}" in
@@ -77,20 +110,25 @@ for task in json.load(open('dataset/subsets/flash.json'))['tasks']:
     ;;
   run)
     arm="$2"; name="$3"; shift 3
+    ensure_redis
     runner "$VENV/bin/python" -m integrations.cooperbench.launch run -n "$name" -m "$MODEL" \
-      --setting coop --backend docker -c "$CONCURRENCY" \
+      --setting coop --backend docker -c "$CONCURRENCY" --eval-concurrency "$EVAL_CONCURRENCY" \
+      --redis "redis://localhost:$REDIS_PORT" \
       --agent-config "$ROOT/integrations/cooperbench/arms/$arm.yaml" --log-dir "$ROOT/logs/cooperbench" "$@"
     ;;
   eval)
     name="$2"; shift 2
     runner "$VENV/bin/python" -m integrations.cooperbench.launch eval -n "$name" \
-      --backend docker --log-dir "$ROOT/logs/cooperbench" "$@"
+      --backend docker --concurrency "$EVAL_CONCURRENCY" --log-dir "$ROOT/logs/cooperbench" "$@"
     ;;
   report)
     shift
     runner "$VENV/bin/python" -m integrations.cooperbench.report --logs "$ROOT/logs/cooperbench" "$@"
     ;;
+  stop)
+    docker rm -f cpc-compress cpc-cb-redis 2>/dev/null || true
+    ;;
   *)
-    sed -n '2,15p' "$0"; exit 1
+    sed -n '2,25p' "$0"; exit 1
     ;;
 esac
