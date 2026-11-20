@@ -41,7 +41,9 @@ EVAL_CONCURRENCY="${EVAL_CONCURRENCY:-3}"
 REDIS_PORT="${REDIS_PORT:-16379}"
 # logs/ is written by the root-run GPU containers, so CooperBench logs live apart, owned by the caller.
 LOG_ROOT="${LOG_ROOT:-$ROOT/logs_cooperbench}"
-export CB_TASK_LIMITS="${TASK_LIMITS:---cpus=2 --memory=8g --cpu-shares=256}"
+# Every container this experiment starts carries the label cpc-cb=1, so it can be found
+# and stopped without touching anyone else's containers.
+export CB_TASK_LIMITS="${TASK_LIMITS:---cpus=2 --memory=8g --cpu-shares=256 --label=cpc-cb=1}"
 DOCKER_BIN="$(command -v docker)"
 DOCKER_GID="$(stat -c %g /var/run/docker.sock)"
 
@@ -62,7 +64,7 @@ runner() {  # run a command in the CooperBench runner container, as the calling 
   elif [[ -f "$LLM_KEY_FILE" ]]; then
     llm=(-e OPENAI_API_BASE="$LLM_BASE" -e OPENAI_API_KEY="$(cat "$LLM_KEY_FILE")")
   fi
-  docker run --rm --network host \
+  docker run --rm --network host --label cpc-cb=1 \
     --user "$(id -u):$(id -g)" --group-add "$DOCKER_GID" \
     -v /var/run/docker.sock:/var/run/docker.sock -v "$DOCKER_BIN:/usr/bin/docker:ro" \
     -v "$ROOT:$ROOT" -w "$CB_DIR" \
@@ -74,7 +76,7 @@ runner() {  # run a command in the CooperBench runner container, as the calling 
 ensure_redis() {  # this experiment's own Redis, never the default port another user may rely on
   if [[ -z "$(docker ps -q -f name=^cpc-cb-redis$)" ]]; then
     docker rm -f cpc-cb-redis >/dev/null 2>&1 || true
-    docker run -d --name cpc-cb-redis -p "127.0.0.1:$REDIS_PORT:6379" redis:alpine >/dev/null
+    docker run -d --name cpc-cb-redis --label cpc-cb=1 -p "127.0.0.1:$REDIS_PORT:6379" redis:alpine >/dev/null
     sleep 2
   fi
 }
@@ -103,7 +105,7 @@ for task in json.load(open('dataset/subsets/flash.json'))['tasks']:
     ;;
   server)
     docker rm -f cpc-compress >/dev/null 2>&1 || true
-    docker run -d --name cpc-compress --gpus "device=$GPU" -p 127.0.0.1:8765:8765 \
+    docker run -d --name cpc-compress --label cpc-cb=1 --gpus "device=$GPU" -p 127.0.0.1:8765:8765 \
       -v "$HOME/.cache/huggingface:/root/.cache/huggingface" -e HF_TOKEN \
       --entrypoint python longmemeval-eval -m integrations.cooperbench.compress_server --host 0.0.0.0 --port 8765
     for _ in $(seq 1 120); do
