@@ -115,16 +115,16 @@ for task in json.load(open('dataset/subsets/flash.json'))['tasks']:
     runner "$VENV/bin/python" -m integrations.cooperbench.launch run -n "$name" -m "$MODEL" \
       --setting coop --backend docker -c "$CONCURRENCY" --eval-concurrency "$EVAL_CONCURRENCY" \
       --redis "redis://localhost:$REDIS_PORT" \
-      --agent-config "$ROOT/integrations/cooperbench/arms/$arm.yaml" --log-dir "$ROOT/logs/cooperbench" "$@"
+      --agent-config "$ROOT/integrations/cooperbench/arms/$arm.yaml" --log-dir "$LOG_ROOT" "$@"
     ;;
   eval)
     name="$2"; shift 2
     runner "$VENV/bin/python" -m integrations.cooperbench.launch eval -n "$name" \
-      --backend docker --concurrency "$EVAL_CONCURRENCY" --log-dir "$ROOT/logs/cooperbench" "$@"
+      --backend docker --concurrency "$EVAL_CONCURRENCY" --log-dir "$LOG_ROOT" "$@"
     ;;
   report)
     shift
-    runner "$VENV/bin/python" -m integrations.cooperbench.report --logs "$ROOT/logs/cooperbench" "$@"
+    runner "$VENV/bin/python" -m integrations.cooperbench.report --logs "$LOG_ROOT" "$@"
     ;;
   stop)
     docker rm -f cpc-compress cpc-cb-redis 2>/dev/null || true
