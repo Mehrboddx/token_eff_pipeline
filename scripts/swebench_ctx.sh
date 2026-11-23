@@ -37,6 +37,7 @@ DOCKER_GID="$(stat -c %g /var/run/docker.sock)"
 
 runner() {  # a command in python:3.12-slim, as the calling user, driving the host's Docker
   mkdir -p "$OUT" "$ROOT/third_party/home"
+  [[ -d "$FORK" ]] && mkdir -p "$FORK/trajectories"  # SWE-agent asserts this directory exists
   local llm=()
   if [[ -f "$GCP_CREDENTIALS" ]]; then
     [[ -n "$VERTEX_PROJECT" ]] || { echo "set VERTEX_PROJECT (or GOOGLE_CLOUD_PROJECT)" >&2; exit 1; }
