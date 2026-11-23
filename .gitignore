@@ -11,3 +11,5 @@ third_party/
 .llm_proxy_key
 .gcp_credentials.json
 logs_cooperbench/
+# HSC-Bench rebuild (scripts/hscbench.sh)
+logs_hsc/
