@@ -48,6 +48,7 @@ runner() {  # a command in python:3.12-slim, as the calling user, driving the ho
     --user "$(id -u):$(id -g)" --group-add "$DOCKER_GID" \
     -v /var/run/docker.sock:/var/run/docker.sock -v "$DOCKER_BIN:/usr/bin/docker:ro" \
     -v "$ROOT:$ROOT" -w "$ROOT" -e HOME="$ROOT/third_party/home" -e PYTHONPATH="$ROOT" -e PYTHONUNBUFFERED=1 \
+    -e GIT_PYTHON_REFRESH=quiet \
     "${CPC_ENV[@]}" "${llm[@]}" python:3.12-slim "$@"
 }
 CPC_ENV=()
