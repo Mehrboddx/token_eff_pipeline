@@ -13,3 +13,4 @@ third_party/
 logs_cooperbench/
 # HSC-Bench rebuild (scripts/hscbench.sh)
 logs_hsc/
+logs_swebench/

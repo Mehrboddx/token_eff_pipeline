@@ -1,0 +1,150 @@
+experiment,strategy,instance_id,cost,summary_cost,has_summary,summary_count,turn_count,mean_reasoning_tokens,mean_completion_tokens,mean_prompt_tokens,outcome
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-11815,0.0148,0.0,False,0,10,0,22,2636,1
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-11880,0.1696,0.0,False,0,19,0,23,27141,1
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-11951,0.078,0.0,False,0,10,0,22,29646,1
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-11964,0.0573,0.0,False,0,36,0,32,4197,1
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-11999,0.4438,0.0,False,0,112,0,20,9952,1
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-12039,0.0246,0.0,False,0,11,0,78,3606,1
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-12050,0.0088,0.0,False,0,7,0,11,2586,1
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-12143,0.0105,0.0,False,0,8,0,24,3068,1
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-12155,0.0049,0.0,False,0,4,0,20,2235,1
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-12193,0.0102,0.0,False,0,6,0,16,2708,1
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-12209,0.0153,0.0,False,0,10,0,18,3596,1
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-12262,0.1179,0.0,False,0,21,0,77,20145,1
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-12276,0.1213,0.0,False,0,34,0,30,8445,1
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-12713,0.1067,0.0,False,0,17,0,36,27904,1
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-9296,0.0292,0.0,False,0,14,0,62,5078,1
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-11790,0.0113,0.0,False,0,8,0,41,2975,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-11848,1.0215,0.0,False,0,213,0,60,14970,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-11885,0.433,0.0,False,0,96,0,40,10930,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-12273,0.0654,0.0,False,0,32,0,36,3184,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-12304,0.4221,0.0,False,0,134,0,56,9680,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-12308,0.7484,0.0,False,0,171,0,31,12931,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-12325,0.0173,0.0,False,0,12,0,26,3240,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-12406,0.2073,0.0,False,0,62,0,28,7797,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-12708,0.0966,0.0,False,0,33,0,46,6202,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,django__django-12774,0.2124,0.0,False,0,75,0,45,7137,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-10323,0.2204,0.0,False,0,96,0,41,7047,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-10435,0.1461,0.0,False,0,61,0,27,6993,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-10466,0.2647,0.0,False,0,66,0,37,10405,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-10673,0.2167,0.0,False,0,50,0,90,13489,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-11510,0.4114,0.0,False,0,28,0,20,44080,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-7590,0.0691,0.0,False,0,19,0,105,12250,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-7748,0.0823,0.0,False,0,19,0,65,15010,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-7757,0.0213,0.0,False,0,12,0,9,2925,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-7985,0.0,0.0,False,0,1,0,0,0,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-8035,0.0,0.0,False,0,1,0,0,0,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-8056,0.0,0.0,False,0,1,0,0,0,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-8265,0.0,0.0,False,0,1,0,0,0,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-8269,0.0,0.0,False,0,1,0,0,0,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-8475,0.0,0.0,False,0,1,0,0,0,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-8548,0.0,0.0,False,0,1,0,0,0,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-8551,0.0,0.0,False,0,1,0,0,0,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-8638,0.0,0.0,False,0,1,0,0,0,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-8721,0.0,0.0,False,0,1,0,0,0,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-9229,0.0,0.0,False,0,1,0,0,0,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-9230,0.0,0.0,False,0,1,0,0,0,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-9281,0.0,0.0,False,0,1,0,0,0,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-9320,0.0,0.0,False,0,1,0,0,0,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-9367,0.0,0.0,False,0,1,0,0,0,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-9461,0.0,0.0,False,0,1,0,0,0,0
+gemini_2.5_flash-agent-t_0.8-baseline_N_1_M_10.0-verified-500,Observation Masking,sphinx-doc__sphinx-9698,0.0,0.0,False,0,1,0,0,0,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-11880,0.0094,0.0,False,0,6,0,25,3031,1
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-11951,0.0059,0.0,False,0,3,0,28,2715,1
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-12050,0.0147,0.0,False,0,10,0,13,3154,1
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-12143,0.0123,0.0,False,0,8,0,24,3539,1
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-12155,0.0491,0.0,False,0,25,0,17,6816,1
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-12209,0.0726,0.0,False,0,20,0,33,5913,1
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-12262,0.0384,0.0,False,0,14,0,144,4055,1
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-12276,0.015,0.0,False,0,11,0,19,3562,1
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-12713,2.2028,0.0,False,0,165,0,153,74850,1
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-9296,0.1682,0.0,False,0,26,0,36,25986,1
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-11790,0.0261,0.0,False,0,15,0,37,4221,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-11815,0.7493,0.0,False,0,80,0,91,54908,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-11848,0.0224,0.0,False,0,10,0,103,4386,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-11885,0.8248,0.0,False,0,120,0,75,33342,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-11964,0.1245,0.0,False,0,49,0,37,9623,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-11999,2.6273,0.0,False,0,251,0,97,64882,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-12039,1.6157,0.0,False,0,149,0,91,55116,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-12193,0.0675,0.0,False,0,12,0,43,26126,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-12273,0.0417,0.0,False,0,21,0,50,4647,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-12304,0.0321,0.0,False,0,5,0,14,23858,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-12308,0.4225,0.0,False,0,83,0,128,22244,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-12325,0.0164,0.0,False,0,12,0,26,3286,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-12406,0.0484,0.0,False,0,24,0,28,5638,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-12708,0.0,0.0,False,0,1,0,0,0,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,django__django-12774,0.0882,0.0,False,0,33,0,43,10123,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-10323,0.0201,0.0,False,0,12,0,18,3985,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-10435,0.0631,0.0,False,0,32,0,39,6381,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-10466,0.0145,0.0,False,0,10,0,20,3935,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-10673,0.2542,0.0,False,0,56,0,104,20284,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-11510,0.2262,0.0,False,0,26,0,26,31798,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-7590,2.6854,0.0,False,0,201,0,101,76200,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-7748,3.2987,0.0,False,0,201,0,139,104523,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-7757,0.0594,0.0,False,0,15,0,295,7081,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-7985,0.4905,0.0,False,0,121,0,22,21875,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-8035,0.6397,0.0,False,0,84,0,108,40291,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-8056,0.0276,0.0,False,0,15,0,51,5805,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-8265,0.0171,0.0,False,0,9,0,10,5139,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-8269,0.2775,0.0,False,0,88,0,38,14222,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-8475,0.0249,0.0,False,0,17,0,14,3608,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-8548,0.443,0.0,False,0,90,0,110,25071,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-8551,1.2084,0.0,False,0,108,0,32,69182,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-8638,0.0402,0.0,False,0,26,0,17,6146,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-8721,1.7534,0.0,False,0,151,0,81,71839,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-9230,3.2252,0.0,False,0,251,0,47,75006,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-9281,0.1357,0.0,False,0,36,0,43,14948,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-9320,0.0377,0.0,False,0,26,0,38,3377,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-9367,0.0155,0.0,False,0,10,0,25,5271,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-9461,4.1086,0.0,False,0,251,0,22,108766,0
+gemini_2.5_flash-agent-t_0.8-baseline_raw.0-verified-500,Raw Agent,sphinx-doc__sphinx-9698,0.1873,0.0,False,0,59,0,27,16245,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-11815,0.0165,0.0,False,0,10,0,23,3305,1
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-11880,0.0784,0.0,False,0,30,0,27,10791,1
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-11951,0.1532,0.0,False,0,38,0,122,17655,1
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-12039,0.027,0.0,False,0,9,0,85,3385,1
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-12050,0.0161,0.0,False,0,13,0,12,2779,1
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-12143,0.0611,0.0,False,0,30,0,32,8594,1
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-12155,0.0421,0.0,False,0,25,0,20,6727,1
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-12262,0.0243,0.0,False,0,10,0,31,3272,1
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-12276,0.3913,0.028,True,2,74,0,37,23651,1
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-12713,0.008,0.0,False,0,6,0,54,2755,1
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-9296,0.1785,0.0,False,0,24,0,36,31968,1
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-11790,0.0185,0.0,False,0,11,0,20,4360,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-11848,0.015,0.0,False,0,9,0,64,2981,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-11885,0.0466,0.0,False,0,21,0,191,4533,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-11964,0.1665,0.0,False,0,25,0,33,31185,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-11999,0.0524,0.0,False,0,34,0,26,6203,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-12193,0.0,0.0,False,0,1,0,0,0,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-12209,0.0032,0.0,False,0,4,0,8,1204,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-12273,0.0957,0.0,False,0,26,0,57,6343,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-12304,0.0055,0.0,False,0,5,0,16,2204,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-12308,0.2868,0.0296,True,1,47,0,24,35781,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-12325,0.0777,0.0063,True,1,39,0,36,5586,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-12406,0.0247,0.0,False,0,16,0,24,4666,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-12708,0.388,0.0511,True,7,173,0,32,9238,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,django__django-12774,0.469,0.0324,True,1,62,0,42,39118,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-10323,0.0539,0.0,False,0,12,0,20,16242,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-10435,0.0058,0.0,False,0,6,0,11,1962,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-10466,0.1238,0.0,False,0,40,0,100,11691,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-10673,0.1393,0.0,False,0,22,0,39,29212,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-11510,0.2279,0.0278,True,1,45,0,27,27969,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-7590,0.9629,0.0806,True,4,137,0,93,30413,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-7748,0.6296,0.0579,True,5,156,0,94,18750,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-7757,0.6544,0.0563,True,4,130,0,74,22303,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-7985,0.0425,0.0,False,0,20,0,69,7430,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-8035,0.0476,0.0,False,0,20,0,40,6446,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-8056,1.3972,0.1393,True,9,242,0,135,24724,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-8265,4.6316,0.2886,True,9,242,0,41,83748,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-8269,0.8216,0.0709,True,8,243,0,53,15475,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-8475,0.1285,0.0,False,0,38,0,88,12320,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-8548,0.0888,0.0,False,0,30,0,61,10801,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-8551,0.0115,0.0,False,0,7,0,19,3139,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-8638,0.1908,0.0179,True,2,77,0,30,10875,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-8721,0.0414,0.0,False,0,9,0,30,14305,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-9229,0.0024,0.0,False,0,3,0,5,1524,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-9230,0.0647,0.0,False,0,24,0,97,6997,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-9281,0.0244,0.0,False,0,15,0,42,2801,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-9320,0.1411,0.0076,True,1,55,0,23,9322,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-9367,0.0182,0.0,False,0,11,0,23,5608,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-9461,0.1019,0.0,False,0,38,0,47,13405,0
+gemini_2.5_flash-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands.0-verified-500,LLM-Summary,sphinx-doc__sphinx-9698,0.0142,0.0,False,0,11,0,21,3094,0
