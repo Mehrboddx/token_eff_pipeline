@@ -20,7 +20,10 @@ def complete(model: str, messages: list[dict], max_tokens: int, reasoning_effort
     """One chat call -> {"text", "prompt_tokens", "completion_tokens", "cached_tokens", "error"}."""
     import litellm
 
-    kwargs = {"model": model, "messages": messages, "max_tokens": max_tokens, "top_p": 1.0}
+    # LiteLLM's model table may not list sampling parameters for newer Gemini models; the
+    # paper fixes them (temperature 0, top-p 1), so they are passed through explicitly.
+    kwargs = {"model": model, "messages": messages, "max_tokens": max_tokens, "top_p": 1.0,
+              "allowed_openai_params": ["temperature", "top_p"]}
     if temperature is not None:
         kwargs["temperature"] = temperature
     if reasoning_effort:
