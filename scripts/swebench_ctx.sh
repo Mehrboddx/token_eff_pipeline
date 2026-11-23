@@ -4,7 +4,7 @@
 # SWE-agent fork, and CPC recall (masking + query-conditioned recall of masked
 # outputs). Runs on the GPU machine, in Docker:
 #   - the compressor service: the CooperBench one (scripts/cooperbench.sh server), GPU 1;
-#   - SWE-agent and the SWE-bench harness in python:3.12-slim, driving the host's
+#   - SWE-agent and the SWE-bench harness in python:3.12 (it has git), driving the host's
 #     Docker (task containers) through the mounted socket.
 #
 #   scripts/swebench_ctx.sh setup                    # fork (pinned), venv, the 50 task images
@@ -32,10 +32,11 @@ MODEL="${MODEL:-vertex_ai/gemini-2.5-flash}"
 WORKERS="${WORKERS:-4}"
 RECALL_BUDGET="${RECALL_BUDGET:-2000}"
 TASK_LIMITS='["--cpus=2", "--memory=8g", "--cpu-shares=256", "--label=cpc-cb=1"]'
+RUNNER_IMAGE="${RUNNER_IMAGE:-python:3.12}"  # the full image, not -slim: SWE-agent calls git
 DOCKER_BIN="$(command -v docker)"
 DOCKER_GID="$(stat -c %g /var/run/docker.sock)"
 
-runner() {  # a command in python:3.12-slim, as the calling user, driving the host's Docker
+runner() {  # a command in $RUNNER_IMAGE, as the calling user, driving the host's Docker
   mkdir -p "$OUT" "$ROOT/third_party/home"
   [[ -d "$FORK" ]] && mkdir -p "$FORK/trajectories"  # SWE-agent asserts this directory exists
   local llm=()
@@ -49,8 +50,7 @@ runner() {  # a command in python:3.12-slim, as the calling user, driving the ho
     --user "$(id -u):$(id -g)" --group-add "$DOCKER_GID" \
     -v /var/run/docker.sock:/var/run/docker.sock -v "$DOCKER_BIN:/usr/bin/docker:ro" \
     -v "$ROOT:$ROOT" -w "$ROOT" -e HOME="$ROOT/third_party/home" -e PYTHONPATH="$ROOT" -e PYTHONUNBUFFERED=1 \
-    -e GIT_PYTHON_REFRESH=quiet \
-    "${CPC_ENV[@]}" "${llm[@]}" python:3.12-slim "$@"
+    "${CPC_ENV[@]}" "${llm[@]}" "$RUNNER_IMAGE" "$@"
 }
 CPC_ENV=()
 
