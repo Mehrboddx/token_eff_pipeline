@@ -107,7 +107,7 @@ case "${1:-}" in
     name="$2"
     runner bash -c "cd '$OUT/$name' && '$VENV/bin/python' -m swebench.harness.run_evaluation \
       --dataset_name princeton-nlp/SWE-bench_Verified --predictions_path preds.json --run_id '$name' \
-      --max_workers $WORKERS --cache_level instance --report_dir ."
+      --max_workers $WORKERS --report_dir ."
     ;;
   report)
     shift
