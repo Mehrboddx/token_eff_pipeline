@@ -12,6 +12,10 @@ Appendix A, "Context preparation"), plus CPC-Mem:
              issue, verbatim, under the state's token count. No LLM call.
   cpc_2x     the same at twice that budget (how the excerpt scales).
   full       the whole pre-handoff history.
+  cpc_ctx    CPC-Mem on the context only: every step's tool call verbatim,
+             and CPC's selection from the tool outputs in the rest of the
+             state's token count, each line under the step it came from.
+  cpc_ctx_2x the same at twice that budget. (Added to built rows by --extend.)
 
 Token counts use o200k_base, as in the paper. The paper's writer is GPT-4.1;
 here it is --writer.
@@ -21,6 +25,7 @@ here it is --writer.
 
 import argparse
 import json
+import re
 import threading
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -126,6 +131,70 @@ def cpc(task: dict, budget: int, url: str) -> dict:
             "asked_budget": asked, "ms": result.get("ms")}
 
 
+_OUTPUT_BLOCK = re.compile(r"^\[step (\d+), output\]$", re.MULTILINE)
+
+
+def _head_tokens(text: str, limit: int) -> str:
+    from integrations.hscbench.llm import _encoding
+
+    tokens = _encoding().encode(text, disallowed_special=())
+    return text if len(tokens) <= limit else _encoding().decode(tokens[:limit]) + " …"
+
+
+def cpc_context(task: dict, budget: int, url: str) -> dict:
+    """CPC-Mem on the context, not the messages: every step's tool call is kept
+    verbatim (what was run or opened: commands, paths, line ranges) and CPC
+    selects, from the tool outputs only, the lines that fill the rest of the
+    budget; each kept line stays under the step that produced it. The tool
+    calls take at most half the budget (each cut to an equal share if more)."""
+    steps = task["history"]
+    commands = [(pair.get("command") or "").strip() for pair in steps]
+    if count_tokens("\n".join(commands)) > budget // 2:
+        commands = [_head_tokens(command, budget // 2 // len(steps)) for command in commands]
+    entries = [{"role": "tool", "label": "output", "text": pair["observation"]} for pair in steps]
+
+    def assemble(excerpt: str) -> str:
+        parts = _OUTPUT_BLOCK.split(excerpt)  # [before, step, lines, step, lines, ...]
+        kept = {int(parts[i]): parts[i + 1].strip() for i in range(1, len(parts) - 1, 2)}
+        blocks = []
+        for number, command in enumerate(commands, 1):
+            block = f"[step {number}] {command}".rstrip()
+            if kept.get(number):
+                block += f"\n--- output (excerpt) ---\n{kept[number]}"
+            blocks.append(block)
+        return "\n\n".join(blocks)
+
+    skeleton = count_tokens(assemble(""))
+    room = budget - skeleton
+    asked, result, text = room, {}, assemble("")
+    for _ in range(4):
+        if asked <= 0:
+            text = assemble("")
+            break
+        payload = {"entries": entries, "query": task["issue"][:3000], "budget": asked}
+        request = urllib.request.Request(url.rstrip("/") + "/compress", data=json.dumps(payload).encode(),
+                                         headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=1800) as response:
+            result = json.loads(response.read())
+        text = assemble(result["text"])
+        size = count_tokens(text)
+        if size <= budget:
+            break
+        asked = int(asked * room / max(1, size - skeleton)) - 5
+    return {"text": text, "units_in": result.get("units_in"), "units_kept": result.get("units_kept"),
+            "asked_budget": asked, "command_tokens": skeleton, "ms": result.get("ms")}
+
+
+def extend(row: dict, task: dict, cpc_url: str) -> dict:
+    """Add the context-compression conditions to an already built row."""
+    for name, factor in (("cpc_ctx", 1), ("cpc_ctx_2x", 2)):
+        excerpt = cpc_context(task, factor * row["budget"], cpc_url)
+        row["contexts"][name] = excerpt["text"]
+        row["tokens"][name] = count_tokens(excerpt["text"])
+        row[name] = {key: excerpt[key] for key in ("units_in", "units_kept", "asked_budget", "command_tokens", "ms")}
+    return row
+
+
 def build(task: dict, writer: str, cpc_url: str) -> dict:
     state = write_state(task, writer)
     budget = count_tokens(state["text"])
@@ -159,15 +228,19 @@ def main():
     parser.add_argument("--writer", default="vertex_ai/gemini-3-flash-preview")
     parser.add_argument("--cpc-url", default="http://127.0.0.1:8765")
     parser.add_argument("--workers", type=int, default=6)
+    parser.add_argument("--extend", help="contexts file whose rows get the cpc_ctx conditions added (no LLM calls)")
     args = parser.parse_args()
 
     out = Path(args.out)
     done = {json.loads(line)["task_id"] for line in out.open(encoding="utf-8")} if out.exists() else set()
     tasks = [task for task in map(json.loads, Path(args.tasks).open(encoding="utf-8")) if task["task_id"] not in done]
+    base = {row["task_id"]: row for row in map(json.loads, Path(args.extend).open(encoding="utf-8"))} if args.extend else {}
+    if args.extend:
+        tasks = [task for task in tasks if task["task_id"] in base]
     lock = threading.Lock()
 
     def run(task):
-        row = build(task, args.writer, args.cpc_url)
+        row = extend(base[task["task_id"]], task, args.cpc_url) if args.extend else build(task, args.writer, args.cpc_url)
         with lock, out.open("a", encoding="utf-8") as sink:
             sink.write(json.dumps(row, ensure_ascii=False) + "\n")
         return row

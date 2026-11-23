@@ -18,7 +18,7 @@ import random
 from collections import defaultdict
 from pathlib import Path
 
-ORDER = ["recent", "summary", "state", "cpc", "cpc_2x", "full"]
+ORDER = ["recent", "summary", "state", "cpc", "cpc_2x", "cpc_ctx", "cpc_ctx_2x", "full"]
 
 
 def normalize(path: str, gold_files: set[str]) -> str:

@@ -14,11 +14,12 @@ class TestTrajectories(unittest.TestCase):
             {"role": "assistant", "content": "THOUGHT: look\n```bash\nls\n```"}, {"role": "user", "content": "a.py"},
             {"role": "assistant", "content": "THOUGHT: done"},
         ]}
-        self.assertEqual(from_miniswe(trajectory), [{"action": "THOUGHT: look\n```bash\nls\n```", "observation": "a.py"}])
+        self.assertEqual(from_miniswe(trajectory), [{"action": "THOUGHT: look\n```bash\nls\n```", "observation": "a.py", "command": "$ ls"}])
 
     def test_sweagent_steps(self):
-        trajectory = {"trajectory": [{"response": "open a.py", "observation": "1:x"}, {"response": "no output yet"}]}
-        self.assertEqual(from_sweagent(trajectory), [{"action": "open a.py", "observation": "1:x"}])
+        trajectory = {"trajectory": [{"response": "I look\nopen a.py", "action": "open a.py\n", "observation": "1:x"},
+                                     {"response": "no output yet"}]}
+        self.assertEqual(from_sweagent(trajectory), [{"action": "I look\nopen a.py", "observation": "1:x", "command": "$ open a.py"}])
 
     def test_openhands_joins_calls_and_outputs(self):
         log = {"messages": [
@@ -36,6 +37,7 @@ class TestTrajectories(unittest.TestCase):
         self.assertIn("$ grep -n foo a.py", pairs[0]["action"])
         self.assertIn('str_replace_editor({"command": "view", "path": "/w/a.py"})', pairs[0]["action"])
         self.assertEqual(pairs[0]["observation"], "3:foo\n1\tx")
+        self.assertEqual(pairs[0]["command"], '$ grep -n foo a.py\nstr_replace_editor({"command": "view", "path": "/w/a.py"})')
 
     def test_long_observation_keeps_head_and_tail(self):
         self.assertEqual(cap_observation("short", limit=10), "short")
@@ -47,6 +49,36 @@ class TestTrajectories(unittest.TestCase):
         text = history_text([{"action": "a", "observation": "b"}, {"action": "c", "observation": "d"}])
         self.assertTrue(text.startswith("[step 1]\na\n--- output ---\nb"))
         self.assertIn("[step 2]", text)
+
+
+class TestContextCompression(unittest.TestCase):
+    def test_tool_calls_verbatim_and_excerpts_under_their_step(self):
+        import json
+        from unittest import mock
+
+        from integrations.hscbench import handoff
+
+        class Reply:
+            def __init__(self, body): self.body = body
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+            def read(self): return self.body
+
+        sent = []
+
+        def fake_urlopen(request, timeout):
+            sent.append(json.loads(request.data))
+            return Reply(json.dumps({"text": "[step 2, output]\n10: def f():\n…\n12: return x", "units_in": 9, "units_kept": 2}).encode())
+
+        task = {"issue": "bug in f", "history": [
+            {"action": "think", "observation": "a.py\nb.py", "command": "$ ls"},
+            {"action": "think more", "observation": "10: def f():\n11: y\n12: return x", "command": "$ cat -n a.py"}]}
+        words = lambda text: len(text.split())
+        with mock.patch.object(handoff, "count_tokens", words), mock.patch.object(handoff.urllib.request, "urlopen", fake_urlopen):
+            result = handoff.cpc_context(task, budget=40, url="http://x")
+        self.assertEqual(result["text"], "[step 1] $ ls\n\n[step 2] $ cat -n a.py\n--- output (excerpt) ---\n10: def f():\n…\n12: return x")
+        self.assertEqual([entry["text"] for entry in sent[0]["entries"]], ["a.py\nb.py", "10: def f():\n11: y\n12: return x"])
+        self.assertEqual(sent[0]["budget"], 40 - words("[step 1] $ ls\n\n[step 2] $ cat -n a.py"))
 
 
 class TestReceiverParsing(unittest.TestCase):
