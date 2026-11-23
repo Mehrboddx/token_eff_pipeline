@@ -82,7 +82,7 @@ case "${1:-}" in
     # the fork goes in without it (the runs here call Vertex through LiteLLM).
     runner bash -c "python -m venv '$VENV' && '$VENV/bin/pip' install -q --upgrade pip && \
       ( '$VENV/bin/pip' install -q -e '$FORK' || ( sed -i '/grazie_api_gateway_client/d' '$FORK/pyproject.toml' && \
-        '$VENV/bin/pip' install -q -e '$FORK' ) ) && '$VENV/bin/pip' install -q swebench google-auth && \
+        '$VENV/bin/pip' install -q -e '$FORK' ) ) && '$VENV/bin/pip' install -q swebench google-auth transformers && \
       '$VENV/bin/pip' freeze | grep -i -E '^(litellm|swe-rex|swebench|sweagent)'"
     while read -r id; do
       docker pull -q "swebench/sweb.eval.x86_64.$(echo "${id//__/_1776_}" | tr 'A-Z' 'a-z'):latest" >/dev/null
