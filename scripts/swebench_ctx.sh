@@ -82,7 +82,7 @@ case "${1:-}" in
     # the fork goes in without it (the runs here call Vertex through LiteLLM).
     runner bash -c "python -m venv '$VENV' && '$VENV/bin/pip' install -q --upgrade pip && \
       ( '$VENV/bin/pip' install -q -e '$FORK' || ( sed -i '/grazie_api_gateway_client/d' '$FORK/pyproject.toml' && \
-        '$VENV/bin/pip' install -q -e '$FORK' ) ) && '$VENV/bin/pip' install -q swebench google-auth transformers && \
+        '$VENV/bin/pip' install -q -e '$FORK' ) ) && '$VENV/bin/pip' install -q 'swebench<5' google-auth transformers && \
       '$VENV/bin/pip' freeze | grep -i -E '^(litellm|swe-rex|swebench|sweagent)'"
     while read -r id; do
       docker pull -q "swebench/sweb.eval.x86_64.$(echo "${id//__/_1776_}" | tr 'A-Z' 'a-z'):latest" >/dev/null
@@ -104,10 +104,12 @@ case "${1:-}" in
       --num_workers "$WORKERS" --output_dir "$OUT/$name" "$@"
     ;;
   eval)
+    # swebench 4.x (5.x expects datasets with an image column); the prebuilt task images
+    # (namespace swebench) are used and kept (cache level instance)
     name="$2"
     runner bash -c "cd '$OUT/$name' && '$VENV/bin/python' -m swebench.harness.run_evaluation \
       --dataset_name princeton-nlp/SWE-bench_Verified --predictions_path preds.json --run_id '$name' \
-      --max_workers $WORKERS --report_dir ."
+      --max_workers $WORKERS --namespace swebench --cache_level instance --report_dir ."
     ;;
   report)
     shift
