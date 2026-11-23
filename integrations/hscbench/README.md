@@ -18,6 +18,9 @@ The paper's code and data are not released, so the track is rebuilt here from th
 - **Tasks:** every eligible task is kept, with one trajectory per task. Eligible means the trajectory has more than
   ten complete pairs. Agents are preferred in the order OpenHands, SWE-agent, mini-SWE-agent. The paper's final
   300 tasks went through a manual screen that is not published.
+- **Long tool outputs:** a single observation longer than 1M characters keeps its first and last 500k. Two runs
+  dumped whole files (7M and 9.6M characters) within their first ten steps, more than any receiver context holds.
+  No other task is affected.
 - **Writer:** the structured state and the summary are written by `--writer` (default Gemini 3 Flash) instead of
   GPT-4.1, following the paper's constraints:
   - the state is valid JSON, about 1,800 characters, at most 4,000;

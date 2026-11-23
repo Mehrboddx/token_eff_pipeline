@@ -4,7 +4,7 @@ import unittest
 
 from integrations.hscbench.receive import parse
 from integrations.hscbench.score import bootstrap, f1, line_set, normalize, score_task, visibility
-from integrations.hscbench.trajectories import from_miniswe, from_openhands, from_sweagent, history_text
+from integrations.hscbench.trajectories import cap_observation, from_miniswe, from_openhands, from_sweagent, history_text
 
 
 class TestTrajectories(unittest.TestCase):
@@ -36,6 +36,12 @@ class TestTrajectories(unittest.TestCase):
         self.assertIn("$ grep -n foo a.py", pairs[0]["action"])
         self.assertIn('str_replace_editor({"command": "view", "path": "/w/a.py"})', pairs[0]["action"])
         self.assertEqual(pairs[0]["observation"], "3:foo\n1\tx")
+
+    def test_long_observation_keeps_head_and_tail(self):
+        self.assertEqual(cap_observation("short", limit=10), "short")
+        capped = cap_observation("a" * 10 + "b" * 10, limit=10)
+        self.assertTrue(capped.startswith("aaaaa\n[... 10 characters cut ...]\n"))
+        self.assertTrue(capped.endswith("bbbbb"))
 
     def test_history_numbers_steps(self):
         text = history_text([{"action": "a", "observation": "b"}, {"action": "c", "observation": "d"}])

@@ -79,6 +79,19 @@ def from_openhands(llm_log: dict) -> list[dict]:
     return pairs
 
 
+MAX_OBSERVATION = 1_000_000  # characters
+
+
+def cap_observation(text: str, limit: int = MAX_OBSERVATION) -> str:
+    """A tool output longer than `limit` keeps its head and tail, as agent harnesses
+    truncate long outputs. Some recorded runs dumped whole files of several million
+    characters, more than any receiver context holds."""
+    if len(text) <= limit:
+        return text
+    half = limit // 2
+    return f"{text[:half]}\n[... {len(text) - 2 * half} characters cut ...]\n{text[-half:]}"
+
+
 def pair_text(pair: dict) -> str:
     return f"{pair['action'].strip()}\n--- output ---\n{pair['observation'].strip()}"
 

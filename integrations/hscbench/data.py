@@ -19,7 +19,7 @@ import tarfile
 import urllib.request
 from pathlib import Path
 
-from integrations.hscbench.trajectories import from_miniswe, from_openhands, from_sweagent
+from integrations.hscbench.trajectories import cap_observation, from_miniswe, from_openhands, from_sweagent
 
 CODETRACE = "https://huggingface.co/datasets/NJU-LINK/CodeTraceBench/resolve/main/"
 CONTEXTBENCH = "https://huggingface.co/datasets/Contextbench/ContextBench/resolve/main/data/contextbench_verified.parquet"
@@ -104,7 +104,7 @@ def main():
                     "agent": run.agent,
                     "traj_id": run.traj_id,
                     "pairs_total": len(pairs),
-                    "history": pairs[:HANDOFF_PAIRS],
+                    "history": [{**pair, "observation": cap_observation(pair["observation"])} for pair in pairs[:HANDOFF_PAIRS]],
                 }, ensure_ascii=False) + "\n")
                 kept += 1
                 break
