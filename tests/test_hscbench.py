@@ -3,7 +3,7 @@
 import unittest
 
 from integrations.hscbench.receive import parse
-from integrations.hscbench.score import bootstrap, f1, line_set, normalize, score_task, visibility
+from integrations.hscbench.score import bootstrap, f1, leaked, line_set, normalize, score_task, visibility
 from integrations.hscbench.trajectories import cap_observation, from_miniswe, from_openhands, from_sweagent, history_text
 
 
@@ -123,6 +123,10 @@ class TestScoring(unittest.TestCase):
         self.assertEqual(visibility(task, "cat src/a.py", "cat src/a.py"), "still recent")
         self.assertEqual(visibility(task, "ls", "early: src/a.py"), "earlier only")
         self.assertEqual(visibility(task, "ls", "ls"), "not observed")
+
+    def test_leaked_reference_fix(self):
+        self.assertTrue(leaked({"history": [{"action": "x", "command": "$ cat /home/fix.patch"}]}))
+        self.assertFalse(leaked({"history": [{"action": "x", "command": "$ git diff"}]}))
 
     def test_bootstrap_by_repository(self):
         mean, low, high = bootstrap({"r1": [0.2, 0.4], "r2": [0.6]}, resamples=2000)

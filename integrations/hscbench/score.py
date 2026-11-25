@@ -69,6 +69,12 @@ def visibility(task: dict, recent_text: str, full_text: str) -> str:
     return "not observed"
 
 
+def leaked(task: dict) -> bool:
+    """The recorded run opened the reference fix: some CodeTraceBench environments left
+    it on disk (/home/fix.patch), so the answer is in the pre-handoff history."""
+    return any("fix.patch" in (pair.get("command") or "") + (pair.get("action") or "") for pair in task["history"])
+
+
 def bootstrap(values_by_repo: dict[str, list[float]], resamples: int = 20000, seed: int = 0) -> tuple[float, float, float]:
     repos = list(values_by_repo)
     flat = [value for values in values_by_repo.values() for value in values]
@@ -87,13 +93,19 @@ def main():
     parser.add_argument("--contexts", default="logs_hsc/contexts.jsonl")
     parser.add_argument("--predictions", default="logs_hsc/predictions.jsonl")
     parser.add_argument("--resamples", type=int, default=20000)
+    parser.add_argument("--exclude-leaked", action="store_true", help="drop tasks whose history opens the reference fix")
+    parser.add_argument("--receiver", help="only this receiver")
     args = parser.parse_args()
 
     tasks = {task["task_id"]: task for task in map(json.loads, Path(args.tasks).open(encoding="utf-8"))}
+    if args.exclude_leaked:
+        dropped = [task_id for task_id, task in tasks.items() if leaked(task)]
+        tasks = {task_id: task for task_id, task in tasks.items() if task_id not in dropped}
+        print(f"excluded {len(dropped)} tasks whose history opens the reference fix")
     contexts = {row["task_id"]: row for row in map(json.loads, Path(args.contexts).open(encoding="utf-8"))}
     scores: dict[tuple[str, str], dict[str, dict]] = defaultdict(dict)  # (receiver, condition) -> task -> score
     for row in map(json.loads, Path(args.predictions).open(encoding="utf-8")):
-        if row["task_id"] in tasks and not row["error"]:
+        if row["task_id"] in tasks and not row["error"] and (not args.receiver or row["receiver"] == args.receiver):
             scores[(row["receiver"], row["condition"])][row["task_id"]] = score_task(tasks[row["task_id"]], row["locations"])
 
     for receiver in sorted({key[0] for key in scores}):
