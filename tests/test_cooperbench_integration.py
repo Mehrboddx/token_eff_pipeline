@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from core.selection import SelectionConfig
 from core.units import Unit
 from integrations.cooperbench import report
 from integrations.cooperbench.compress_server import Compressor, entries_to_units
@@ -24,6 +25,7 @@ class FakeTokenWise:
 
     def __init__(self):
         self.calls = 0
+        self.selection = SelectionConfig()  # per-request overrides are applied to it
 
     def compress_units(self, query, budget, units, extra_queries=()):
         self.calls += 1
