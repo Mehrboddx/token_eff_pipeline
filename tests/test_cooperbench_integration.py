@@ -70,6 +70,7 @@ class TestUnits(unittest.TestCase):
     def test_exact_repeats_are_dropped(self):
         text = "\n".join(["the build failed on line twelve again"] * 3 + ["a different line of output here"])
         self.assertEqual(len(entries_to_units([{"role": "tool", "text": text}], count)), 2)
+        self.assertEqual(len(entries_to_units([{"role": "tool", "text": text}], count, dedupe=False)), 4)
 
     def test_blank_lines_are_skipped(self):
         units = entries_to_units(
@@ -86,6 +87,8 @@ class TestRender(unittest.TestCase):
         entries = [{"role": "assistant", "text": ""}, {"role": "tool", "text": ""}]
         selected = [self.unit(0, 0, "a"), self.unit(2, 0, "c"), self.unit(3, 1, "d")]
         self.assertEqual(render_excerpt(selected, entries), "[step 1, you]\na\n…\nc\n\n[step 2, tool output]\nd")
+        numbered = [{"role": "tool", "text": "", "step": 0, "label": "x"}, {"role": "tool", "text": "", "step": 7}]
+        self.assertEqual(render_excerpt(selected, numbered), "[step 0, x]\na\n…\nc\n\n[step 7, tool output]\nd")
 
     def test_single_entry_has_no_label(self):
         selected = [self.unit(1, 0, "b"), self.unit(0, 0, "a")]

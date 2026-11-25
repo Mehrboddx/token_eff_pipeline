@@ -22,7 +22,8 @@ def render_excerpt(selected: Sequence, entries: Sequence[dict]) -> str:
     for index, units in by_entry.items():
         role = entries[index].get("role", "user")
         label = entries[index].get("label") or ROLE_NAMES.get(role, role)
-        blocks.append(f"[step {index + 1}, {label}]\n{_render_lines(units)}")
+        step = entries[index].get("step", index + 1)  # an entry may carry its own step number
+        blocks.append(f"[step {step}, {label}]\n{_render_lines(units)}")
     return "\n\n".join(blocks)
 
 

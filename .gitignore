@@ -14,3 +14,4 @@ logs_cooperbench/
 # HSC-Bench rebuild (scripts/hscbench.sh)
 logs_hsc/
 logs_swebench/
+logs_ama/

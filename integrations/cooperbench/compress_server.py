@@ -17,6 +17,8 @@ agent's own transcript.
 Ablations (same units, budget packing and rendering; only the ranking changes):
        "selection": {"provence_weight": 1.0, "lexical_weight": 0.0}   # this request only
        "selector": "random", "seed": 0                                  # random ranking
+       "dedupe": false          # keep exact repeats (default: only the first occurrence)
+    An entry may also carry "step" (its number in the excerpt labels) and "label".
 
 Units are built the same way for every input (entries_to_units): lines,
 split into sentences where a line holds several; pieces under four words
@@ -43,7 +45,7 @@ from core.units import Unit, word_count
 from integrations.cooperbench.render import render_excerpt
 
 
-def entries_to_units(entries, count_tokens, min_words: int = 4, max_words: int = 60) -> list[Unit]:
+def entries_to_units(entries, count_tokens, min_words: int = 4, max_words: int = 60, dedupe: bool = True) -> list[Unit]:
     """Entries -> scorable units, the same way for every input.
 
     Each line is a piece (split further into sentences when it holds
@@ -51,7 +53,8 @@ def entries_to_units(entries, count_tokens, min_words: int = 4, max_words: int =
     (`}`, `import os`, "Thanks!") joins the unit before it, by a newline
     when it is its own line, so code keeps its layout and short lines are
     not nearly-free picks under a budget; a unit stops absorbing pieces at
-    `max_words`. Exact repeats keep only their first occurrence."""
+    `max_words`. Exact repeats keep only their first occurrence, unless
+    `dedupe` is off (the same line at different steps can mean different things)."""
     units: list[Unit] = []
     seen: set[tuple[str, str]] = set()
     for index, entry in enumerate(entries):
@@ -72,7 +75,7 @@ def entries_to_units(entries, count_tokens, min_words: int = 4, max_words: int =
                 merged.append(text)
         for text in merged:
             key = (role, text.strip())
-            if key in seen:
+            if dedupe and key in seen:
                 continue
             seen.add(key)
             units.append(Unit(id=len(units), text=text, role=role, entry_index=index, tokens=count_tokens(text)))
@@ -95,7 +98,7 @@ class Compressor:
         start = time.perf_counter()
         count = self.tokenwise.count_tokens
         entries = request.get("entries") or []
-        units = entries_to_units(entries, count)
+        units = entries_to_units(entries, count, dedupe=bool(request.get("dedupe", True)))
         tokens_in = sum(count(entry.get("text") or "") for entry in entries)  # what the agent would have read
         if "budget" in request:
             budget = int(request["budget"])
