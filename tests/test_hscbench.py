@@ -80,6 +80,14 @@ class TestContextCompression(unittest.TestCase):
         self.assertEqual([entry["text"] for entry in sent[0]["entries"]], ["a.py\nb.py", "10: def f():\n11: y\n12: return x"])
         self.assertEqual(sent[0]["budget"], 40 - words("[step 1] $ ls\n\n[step 2] $ cat -n a.py"))
 
+        sent.clear()
+        with mock.patch.object(handoff, "count_tokens", words), mock.patch.object(handoff.urllib.request, "urlopen", fake_urlopen):
+            only = handoff.cpc_context(task, budget=40, url="http://x", outputs=False)
+            handoff.cpc_context(task, budget=40, url="http://x", extra=handoff.CONTEXT_VARIANTS["ctx_bm25"][1])
+        self.assertEqual(only["text"], "[step 1] $ ls\n\n[step 2] $ cat -n a.py")
+        self.assertEqual(len(sent), 1)  # commands only: no service call
+        self.assertEqual(sent[0]["selection"], {"provence_weight": 0.0, "lexical_weight": 1.0})
+
 
 class TestReceiverParsing(unittest.TestCase):
     def test_parse_limits_and_validates(self):

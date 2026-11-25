@@ -14,6 +14,10 @@ agent's own transcript.
     -> {"text": ..., "tokens_in": ..., "tokens_out": ..., "units_in": ..., "units_kept": ..., "ms": ...}
     GET /health
 
+Ablations (same units, budget packing and rendering; only the ranking changes):
+       "selection": {"provence_weight": 1.0, "lexical_weight": 0.0}   # this request only
+       "selector": "random", "seed": 0                                  # random ranking
+
 Units are built the same way for every input (entries_to_units): lines,
 split into sentences where a line holds several; pieces under four words
 join the unit before them, by a newline, so code and tool output keep
@@ -23,14 +27,18 @@ their layout. tokens_in is the raw text the agent would have read.
 """
 
 import argparse
+import dataclasses
 import json
+import random
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from core.memory import split_sentences
-from core.selection import SelectionConfig
+from core.selection import SelectionConfig, select_units
+
+SELECTION_OVERRIDES = {"provence_weight", "lexical_weight"}
 from core.units import Unit, word_count
 from integrations.cooperbench.render import render_excerpt
 
@@ -98,10 +106,22 @@ class Compressor:
             # Already fits: nothing to drop, no model call, and the text goes back untouched.
             text = entries[0].get("text") or "" if len(entries) == 1 else render_excerpt(units, entries)
             return self._result(text, tokens_in, units, units, budget, start)
+        if request.get("selector") == "random":  # ablation floor: no scorer, random ranking
+            rng = random.Random(int(request.get("seed", 0)))
+            ids = select_units(units, [rng.random() for _ in units], budget, count, self.tokenwise.selection)
+            selected = [units[index] for index in ids]
+            return self._result(render_excerpt(selected, entries), tokens_in, units, selected, budget, start)
+        overrides = {key: float(value) for key, value in (request.get("selection") or {}).items()
+                     if key in SELECTION_OVERRIDES}
         with self.lock:
-            result = self.tokenwise.compress_units(
-                request.get("query") or "", budget, units, request.get("extra_queries") or ()
-            )
+            saved = self.tokenwise.selection
+            self.tokenwise.selection = dataclasses.replace(saved, **overrides)
+            try:
+                result = self.tokenwise.compress_units(
+                    request.get("query") or "", budget, units, request.get("extra_queries") or ()
+                )
+            finally:
+                self.tokenwise.selection = saved
         selected = result.selected or []
         return self._result(render_excerpt(selected, entries), tokens_in, units, selected, budget, start)
 

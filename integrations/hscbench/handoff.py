@@ -16,6 +16,9 @@ Appendix A, "Context preparation"), plus CPC-Mem:
              and CPC's selection from the tool outputs in the rest of the
              state's token count, each line under the step it came from.
   cpc_ctx_2x the same at twice that budget. (Added to built rows by --extend.)
+  ablations  the same layout and budget with the output lines ranked another
+             way, or none kept: cmds_only, ctx_random, ctx_bm25, ctx_provence,
+             ctx_cpc_only (CONTEXT_VARIANTS; --extend --variants ...).
 
 Token counts use o200k_base, as in the paper. The paper's writer is GPT-4.1;
 here it is --writer.
@@ -141,12 +144,15 @@ def _head_tokens(text: str, limit: int) -> str:
     return text if len(tokens) <= limit else _encoding().decode(tokens[:limit]) + " …"
 
 
-def cpc_context(task: dict, budget: int, url: str) -> dict:
+def cpc_context(task: dict, budget: int, url: str, extra: dict | None = None, outputs: bool = True) -> dict:
     """CPC-Mem on the context, not the messages: every step's tool call is kept
     verbatim (what was run or opened: commands, paths, line ranges) and CPC
     selects, from the tool outputs only, the lines that fill the rest of the
     budget; each kept line stays under the step that produced it. The tool
-    calls take at most half the budget (each cut to an equal share if more)."""
+    calls take at most half the budget (each cut to an equal share if more).
+
+    `extra` goes into the service request (a different ranking for the
+    ablations: see CONTEXT_VARIANTS); `outputs=False` keeps the tool calls only."""
     steps = task["history"]
     commands = [(pair.get("command") or "").strip() for pair in steps]
     if count_tokens("\n".join(commands)) > budget // 2:
@@ -166,12 +172,12 @@ def cpc_context(task: dict, budget: int, url: str) -> dict:
 
     skeleton = count_tokens(assemble(""))
     room = budget - skeleton
-    asked, result, text = room, {}, assemble("")
+    asked, result, text = (room if outputs else 0), {}, assemble("")
     for _ in range(4):
         if asked <= 0:
             text = assemble("")
             break
-        payload = {"entries": entries, "query": task["issue"][:3000], "budget": asked}
+        payload = {"entries": entries, "query": task["issue"][:3000], "budget": asked, **(extra or {})}
         request = urllib.request.Request(url.rstrip("/") + "/compress", data=json.dumps(payload).encode(),
                                          headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(request, timeout=1800) as response:
@@ -185,10 +191,26 @@ def cpc_context(task: dict, budget: int, url: str) -> dict:
             "asked_budget": asked, "command_tokens": skeleton, "ms": result.get("ms")}
 
 
-def extend(row: dict, task: dict, cpc_url: str) -> dict:
-    """Add the context-compression conditions to an already built row."""
-    for name, factor in (("cpc_ctx", 1), ("cpc_ctx_2x", 2)):
-        excerpt = cpc_context(task, factor * row["budget"], cpc_url)
+# name -> (budget factor, service request extras, outputs kept). Same layout and budget;
+# only what ranks the output lines changes (the ablations of cpc_ctx).
+CONTEXT_VARIANTS = {
+    "cpc_ctx": (1, {}, True),                    # CPC + Provence fusion (the service default)
+    "cpc_ctx_2x": (2, {}, True),
+    "cmds_only": (1, {}, False),                 # the tool calls alone
+    "ctx_random": (1, {"selector": "random", "seed": 0}, True),
+    "ctx_bm25": (1, {"selection": {"provence_weight": 0.0, "lexical_weight": 1.0}}, True),
+    "ctx_provence": (1, {"selection": {"provence_weight": 1.0}}, True),
+    "ctx_cpc_only": (1, {"selection": {"provence_weight": 0.0}}, True),
+}
+
+
+def extend(row: dict, task: dict, cpc_url: str, names: tuple[str, ...] = ("cpc_ctx", "cpc_ctx_2x")) -> dict:
+    """Add context-compression conditions to an already built row (those it lacks)."""
+    for name in names:
+        if name in row["contexts"]:
+            continue
+        factor, extra, outputs = CONTEXT_VARIANTS[name]
+        excerpt = cpc_context(task, factor * row["budget"], cpc_url, extra, outputs)
         row["contexts"][name] = excerpt["text"]
         row["tokens"][name] = count_tokens(excerpt["text"])
         row[name] = {key: excerpt[key] for key in ("units_in", "units_kept", "asked_budget", "command_tokens", "ms")}
@@ -228,8 +250,13 @@ def main():
     parser.add_argument("--writer", default="vertex_ai/gemini-3-flash-preview")
     parser.add_argument("--cpc-url", default="http://127.0.0.1:8765")
     parser.add_argument("--workers", type=int, default=6)
-    parser.add_argument("--extend", help="contexts file whose rows get the cpc_ctx conditions added (no LLM calls)")
+    parser.add_argument("--extend", help="contexts file whose rows get context-compression conditions added (no LLM calls)")
+    parser.add_argument("--variants", default="cpc_ctx,cpc_ctx_2x", help=f"with --extend: any of {', '.join(CONTEXT_VARIANTS)}")
     args = parser.parse_args()
+    variants = tuple(name for name in args.variants.split(",") if name)
+    unknown = [name for name in variants if name not in CONTEXT_VARIANTS]
+    if unknown:
+        parser.error(f"unknown variants {unknown}")
 
     out = Path(args.out)
     done = {json.loads(line)["task_id"] for line in out.open(encoding="utf-8")} if out.exists() else set()
@@ -240,7 +267,7 @@ def main():
     lock = threading.Lock()
 
     def run(task):
-        row = extend(base[task["task_id"]], task, args.cpc_url) if args.extend else build(task, args.writer, args.cpc_url)
+        row = extend(base[task["task_id"]], task, args.cpc_url, variants) if args.extend else build(task, args.writer, args.cpc_url)
         with lock, out.open("a", encoding="utf-8") as sink:
             sink.write(json.dumps(row, ensure_ascii=False) + "\n")
         return row
