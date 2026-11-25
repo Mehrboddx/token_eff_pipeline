@@ -52,10 +52,13 @@ def parse(text: str) -> list[dict] | None:
         if not isinstance(location, dict) or not isinstance(location.get("file"), str):
             continue
         spans = []
-        for span in (location.get("spans") or [])[:12]:
+        spans_in = location.get("spans") or []
+        for span in (spans_in if isinstance(spans_in, list) else [])[:12]:
+            if isinstance(span, dict):  # {"start": s, "end": e}, as some models write it
+                span = [span.get("start"), span.get("end")]
             try:
                 start, end = int(span[0]), int(span[1])
-            except (TypeError, ValueError, IndexError):
+            except (TypeError, ValueError, IndexError, KeyError):
                 continue
             if start >= 1 and end >= start:
                 spans.append([start, end])

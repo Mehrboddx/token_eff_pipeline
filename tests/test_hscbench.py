@@ -94,6 +94,10 @@ class TestReceiverParsing(unittest.TestCase):
         text = 'Here: {"locations": [{"file": "a.py", "spans": [[3, 5], [0, 2], [9, 7], ["x", 1]]}, {"spans": [[1, 2]]}]}'
         self.assertEqual(parse(text), [{"file": "a.py", "spans": [[3, 5]]}])
 
+    def test_spans_as_objects_or_malformed(self):
+        text = '{"locations": [{"file": "a.py", "spans": [{"start": 3, "end": 5}, {"x": 1}, 7]}, {"file": "b.py", "spans": "1-2"}]}'
+        self.assertEqual(parse(text), [{"file": "a.py", "spans": [[3, 5]]}, {"file": "b.py", "spans": []}])
+
     def test_unparsable_is_none(self):
         self.assertIsNone(parse("no json here"))
         self.assertIsNone(parse('{"files": []}'))
