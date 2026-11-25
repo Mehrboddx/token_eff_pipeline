@@ -7,6 +7,9 @@
     actions  the agent's actions alone, latest first while they fit, in step order
     random   the compressor service with a random ranking (same units and layout as cpc)
     cpc      the compressor service: CPC + Provence fusion, query = the question
+    act_cpc  the action log (at most half the budget) + CPC-selected observation
+             lines in the rest, each under its step
+    act_random  the same layout, observation lines ranked at random
 
 Excerpts from the service keep each step's own number ([step N, ...]); exact
 repeats are kept, since the same line at two steps can answer different questions.
@@ -18,6 +21,7 @@ The full trajectory (condition `full`) is assembled by the reader step.
 
 import argparse
 import json
+import re
 import threading
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -26,7 +30,7 @@ from pathlib import Path
 from integrations.amabench.data import _encoding, count_tokens, step_text
 from integrations.hscbench.trajectories import cap_observation
 
-CONDITIONS = ("trunc", "bm25", "actions", "random", "cpc")
+CONDITIONS = ("trunc", "bm25", "actions", "random", "cpc", "act_random", "act_cpc")
 CUT_MARK = "\n[... middle of the trajectory cut ...]\n"
 
 
@@ -44,15 +48,19 @@ def truncate(text: str, budget: int) -> str:
     return _encoding().decode(ids[:head]) + CUT_MARK + _encoding().decode(ids[len(ids) - (room - head):])
 
 
-def pack(blocks: list[str], order: list[int], budget: int) -> str:
-    """Blocks taken in `order` while they fit, then shown in their original order."""
+def fit(blocks: list[str], order: list[int], budget: int) -> list[int]:
+    """Indices of the blocks taken in `order` while they fit, in their original order."""
     kept, used = [], 0
     for index in order:
         cost = count_tokens(blocks[index]) + 1
         if used + cost <= budget:
             kept.append(index)
             used += cost
-    return "\n".join(blocks[index] for index in sorted(kept))
+    return sorted(kept)
+
+
+def pack(blocks: list[str], order: list[int], budget: int) -> str:
+    return "\n".join(blocks[index] for index in fit(blocks, order, budget))
 
 
 def bm25_context(trajectory: list[dict], question: str, budget: int) -> str:
@@ -63,8 +71,12 @@ def bm25_context(trajectory: list[dict], question: str, budget: int) -> str:
     return pack(blocks, sorted(range(len(blocks)), key=lambda i: -scores[i]), budget)
 
 
+def action_blocks(trajectory: list[dict]) -> list[str]:
+    return [f"Step {step.get('turn_idx', 0)}: Action: {step.get('action') or ''}" for step in trajectory]
+
+
 def actions_context(trajectory: list[dict], budget: int) -> str:
-    blocks = [f"Step {step.get('turn_idx', 0)}: Action: {step.get('action') or ''}" for step in trajectory]
+    blocks = action_blocks(trajectory)
     return pack(blocks, list(range(len(blocks) - 1, -1, -1)), budget)
 
 
@@ -93,6 +105,59 @@ def service_context(trajectory: list[dict], question: str, budget: int, url: str
             "units_kept": result.get("units_kept")}
 
 
+_OBSERVATION_BLOCK = re.compile(r"^\[step (\d+), observation\]$", re.MULTILINE)
+
+
+def actions_with_excerpts(trajectory: list[dict], question: str, budget: int, url: str, extra: dict) -> dict:
+    """The action log (latest first, at most half the budget) plus lines the
+    service selects from the observations only, each under its step:
+
+        Step 7: Action: go to safe 1
+        --- observation (excerpt) ---
+        The safe 1 is closed.
+
+    `extra` sets the ranking (empty: CPC fusion; {"selector": "random", ...})."""
+    blocks = action_blocks(trajectory)
+    with_actions = {trajectory[index].get("turn_idx", 0)
+                    for index in fit(blocks, list(range(len(blocks) - 1, -1, -1)), budget // 2)}
+    entries = [{"role": "tool", "label": "observation", "step": step.get("turn_idx", 0),
+                "text": cap_observation(step.get("observation") or "")} for step in trajectory]
+
+    def assemble(excerpt: str) -> str:
+        parts = _OBSERVATION_BLOCK.split(excerpt)  # [before, step, lines, step, lines, ...]
+        kept = {int(parts[i]): parts[i + 1].strip() for i in range(1, len(parts) - 1, 2)}
+        blocks = []
+        for step in trajectory:
+            number = step.get("turn_idx", 0)
+            if number not in with_actions and not kept.get(number):
+                continue
+            block = f"Step {number}:" + (f" Action: {step.get('action') or ''}" if number in with_actions else "")
+            if kept.get(number):
+                block += f"\n--- observation (excerpt) ---\n{kept[number]}"
+            blocks.append(block)
+        return "\n\n".join(blocks)
+
+    skeleton = count_tokens(assemble(""))
+    room = asked = budget - skeleton
+    result, text = {}, assemble("")
+    for _ in range(4):
+        if asked <= 0:
+            text = assemble("")
+            break
+        payload = {"entries": entries, "query": question, "budget": asked, "dedupe": False, **extra}
+        request = urllib.request.Request(url.rstrip("/") + "/compress", data=json.dumps(payload).encode(),
+                                         headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=1800) as reply:
+            result = json.loads(reply.read())
+        text = assemble(result["text"])
+        size = count_tokens(text)
+        if size <= budget:
+            break
+        asked = int(asked * room / max(1, size - skeleton)) - 5
+    return {"text": text, "ms": result.get("ms"), "units_in": result.get("units_in"),
+            "units_kept": result.get("units_kept"), "action_tokens": skeleton}
+
+
 def build(episode: dict, qa: dict, condition: str, budget: int, url: str) -> dict:
     trajectory, question = episode["trajectory"], qa["question"]
     row = {"episode_id": episode["episode_id"], "question_uuid": qa["question_uuid"], "condition": condition,
@@ -108,6 +173,10 @@ def build(episode: dict, qa: dict, condition: str, budget: int, url: str) -> dic
             row.update(service_context(trajectory, question, budget, url, {"selector": "random", "seed": 0}))
         elif condition == "cpc":
             row.update(service_context(trajectory, question, budget, url, {}))
+        elif condition == "act_cpc":
+            row.update(actions_with_excerpts(trajectory, question, budget, url, {}))
+        elif condition == "act_random":
+            row.update(actions_with_excerpts(trajectory, question, budget, url, {"selector": "random", "seed": 0}))
         else:
             raise ValueError(f"unknown condition {condition}")
     except Exception as caught:  # recorded, and retried on the next run

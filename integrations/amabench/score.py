@@ -15,8 +15,8 @@ from pathlib import Path
 
 from integrations.hscbench.score import bootstrap
 
-ORDER = ["trunc", "actions", "bm25", "random", "cpc", "full"]
-PAIRS = [("cpc", "bm25"), ("cpc", "random"), ("cpc", "trunc"), ("cpc", "actions"), ("cpc", "full"),
+ORDER = ["trunc", "actions", "bm25", "random", "cpc", "act_random", "act_cpc", "full"]
+PAIRS = [("act_cpc", "actions"), ("act_cpc", "act_random"), ("act_cpc", "cpc"), ("act_cpc", "full"), ("act_random", "actions"), ("cpc", "bm25"), ("cpc", "random"), ("cpc", "trunc"), ("cpc", "actions"), ("cpc", "full"),
          ("bm25", "random"), ("bm25", "full")]
 LONG = 32_000
 

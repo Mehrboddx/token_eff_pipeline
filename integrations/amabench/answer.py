@@ -64,7 +64,7 @@ def main():
     parser.add_argument("--out", default="logs_ama/answers.jsonl")
     parser.add_argument("--reader", default="vertex_ai/gemini-3.5-flash-lite")
     parser.add_argument("--reasoning", default="minimal")
-    parser.add_argument("--conditions", default="full,trunc,bm25,actions,random,cpc")
+    parser.add_argument("--conditions", default="full,trunc,bm25,actions,random,cpc,act_random,act_cpc")
     parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args()
 

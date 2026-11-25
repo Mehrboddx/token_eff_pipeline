@@ -88,6 +88,32 @@ class TestContexts(unittest.TestCase):
         self.assertEqual(sent[0]["query"], "q")
 
 
+class TestActionsWithExcerpts(unittest.TestCase):
+    def test_action_log_and_observation_lines_under_their_step(self):
+        import json
+
+        sent = []
+
+        class Reply:
+            def __init__(self, body): self.body = body
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+            def read(self): return self.body
+
+        def fake_urlopen(request, timeout):
+            sent.append(json.loads(request.data))
+            return Reply(json.dumps({"text": "[step 0, observation]\nA key lies inside.", "ms": 1}).encode())
+
+        with mock.patch.object(contexts, "count_tokens", words), mock.patch.object(contexts.urllib.request, "urlopen", fake_urlopen):
+            row = contexts.actions_with_excerpts(TRAJECTORY, "which key?", 24, "http://x", {})
+        # half the budget (12 words) holds the last two actions; step 0 appears for its excerpt only
+        self.assertEqual(row["text"], "Step 0:\n--- observation (excerpt) ---\nA key lies inside.\n\n"
+                                      "Step 1: Action: take key\n\nStep 2: Action: go north")
+        self.assertEqual([entry["step"] for entry in sent[0]["entries"]], [0, 1, 2])
+        self.assertEqual(sent[0]["entries"][2]["text"], "")  # no observation
+        self.assertEqual(sent[0]["budget"], 24 - words("Step 1: Action: take key\n\nStep 2: Action: go north"))
+
+
 class TestAnswer(unittest.TestCase):
     def test_parse_batched_and_single(self):
         self.assertEqual(answer.parse_answers("Answer[1]: north\nAnswer[2]: the key\n", 2), ["north", "the key"])
