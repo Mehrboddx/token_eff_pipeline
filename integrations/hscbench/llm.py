@@ -22,6 +22,8 @@ def complete(model: str, messages: list[dict], max_tokens: int, reasoning_effort
 
     # LiteLLM's model table may not list sampling parameters for newer Gemini models; the
     # paper fixes them (temperature 0, top-p 1), so they are passed through explicitly.
+    # Google ignores them on Gemini 3.6 Flash, 3.5 Flash-Lite and later (LiteLLM's model map:
+    # supports_sampling_params false), so those models sample at their defaults.
     kwargs = {"model": model, "messages": messages, "max_tokens": max_tokens, "top_p": 1.0,
               "allowed_openai_params": ["temperature", "top_p"]}
     if temperature is not None:

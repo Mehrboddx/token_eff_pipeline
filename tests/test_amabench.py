@@ -130,6 +130,41 @@ class TestAnswer(unittest.TestCase):
         self.assertTrue(batch.endswith("Answer[1]: [your answer here]\nAnswer[2]: [your answer here]"))
 
 
+class TestScore(unittest.TestCase):
+    def test_condition_filter_and_held_out_episodes(self):
+        import io
+        import json
+        import sys
+        import tempfile
+        from contextlib import redirect_stdout
+        from pathlib import Path
+
+        from integrations.amabench import score
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            episodes = [{"episode_id": e, "domain": "d", "full_tokens": 10,
+                         "qa_pairs": [{"question_uuid": f"{e}{i}", "type": "A"} for i in range(2)]} for e in (1, 2)]
+            (tmp / "e.jsonl").write_text("\n".join(map(json.dumps, episodes)))
+            (tmp / "pilot.jsonl").write_text(json.dumps({"episode_id": 1}))
+            judged = [{"question_uuid": q, "condition": c, "reader": "r", "score": 1.0, "parsed": True, "error": ""}
+                      for q in ("10", "11", "20", "21") for c in ("a", "b")]
+            judged.append({"question_uuid": "10", "condition": "only_pilot", "reader": "r", "score": 0.0, "parsed": True, "error": ""})
+            (tmp / "j.jsonl").write_text("\n".join(map(json.dumps, judged)))
+
+            def run(*extra):
+                out = io.StringIO()
+                argv = ["score", "--episodes", str(tmp / "e.jsonl"), "--contexts", str(tmp / "none.jsonl"),
+                        "--judged", str(tmp / "j.jsonl"), "--resamples", "50", *extra]
+                with mock.patch.object(sys, "argv", argv), redirect_stdout(out):
+                    score.main()
+                return out.getvalue()
+
+            self.assertIn("1 questions in 1 episodes", run())  # only_pilot narrows to one question
+            self.assertIn("4 questions in 2 episodes", run("--conditions", "a,b"))
+            self.assertIn("2 questions in 1 episodes", run("--conditions", "a,b", "--exclude-episodes", str(tmp / "pilot.jsonl")))
+
+
 class TestJudge(unittest.TestCase):
     def test_last_yes_or_no_decides(self):
         self.assertEqual(judge.verdict("yes"), 1.0)

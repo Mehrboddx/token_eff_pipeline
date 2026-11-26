@@ -95,7 +95,7 @@ def service_context(trajectory: list[dict], question: str, budget: int, url: str
         payload = {"entries": entries, "query": question, "budget": asked, "dedupe": False, **extra}
         request = urllib.request.Request(url.rstrip("/") + "/compress", data=json.dumps(payload).encode(),
                                          headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(request, timeout=1800) as reply:
+        with urllib.request.urlopen(request, timeout=3600) as reply:
             result = json.loads(reply.read())
         tokens = count_tokens(result["text"])
         if tokens <= budget:
@@ -147,7 +147,7 @@ def actions_with_excerpts(trajectory: list[dict], question: str, budget: int, ur
         payload = {"entries": entries, "query": question, "budget": asked, "dedupe": False, **extra}
         request = urllib.request.Request(url.rstrip("/") + "/compress", data=json.dumps(payload).encode(),
                                          headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(request, timeout=1800) as reply:
+        with urllib.request.urlopen(request, timeout=3600) as reply:
             result = json.loads(reply.read())
         text = assemble(result["text"])
         size = count_tokens(text)

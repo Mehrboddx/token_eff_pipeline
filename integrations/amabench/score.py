@@ -27,22 +27,29 @@ def main():
     parser.add_argument("--contexts", default="logs_ama/contexts.jsonl")
     parser.add_argument("--judged", default="logs_ama/judged.jsonl")
     parser.add_argument("--resamples", type=int, default=20000)
+    parser.add_argument("--conditions", help="only these (comma-separated); questions must be judged under each")
+    parser.add_argument("--exclude-episodes", help="a jsonl of episodes to leave out (e.g. the pilot, for a held-out score)")
     args = parser.parse_args()
 
     episodes = {e["episode_id"]: e for e in map(json.loads, Path(args.episodes).open(encoding="utf-8"))}
+    if args.exclude_episodes:
+        dropped = {json.loads(line)["episode_id"] for line in Path(args.exclude_episodes).open(encoding="utf-8")}
+        episodes = {k: e for k, e in episodes.items() if k not in dropped}
+        print(f"left out {len(dropped)} episodes listed in {args.exclude_episodes}")
+    wanted = set(args.conditions.split(",")) if args.conditions else None
     meta = {qa["question_uuid"]: {"episode": e["episode_id"], "type": qa["type"], "domain": e["domain"],
                                    "length": "long (>=32k)" if e["full_tokens"] >= LONG else "short (<32k)",
                                    "full_tokens": e["full_tokens"]}
             for e in episodes.values() for qa in e["qa_pairs"]}
-    tokens = defaultdict(list)
+    tokens = {}  # (question, condition) -> context tokens
     if Path(args.contexts).exists():
         for row in map(json.loads, Path(args.contexts).open(encoding="utf-8")):
             if not row["error"]:
-                tokens[row["condition"]].append(row["tokens"])
+                tokens[(row["question_uuid"], row["condition"])] = row["tokens"]
     scores = defaultdict(dict)  # (reader, condition) -> question -> score
     unparsed = defaultdict(int)
     for row in map(json.loads, Path(args.judged).open(encoding="utf-8")):
-        if not row["error"] and row["question_uuid"] in meta:
+        if not row["error"] and row["question_uuid"] in meta and (wanted is None or row["condition"] in wanted):
             scores[(row["reader"], row["condition"])][row["question_uuid"]] = row["score"]
             unparsed[(row["reader"], row["condition"])] += not row["parsed"]
 
@@ -57,7 +64,8 @@ def main():
             for q in common:
                 by_episode[meta[q]["episode"]].append(scores[(reader, condition)][q])
             mean, low, high = bootstrap(by_episode, args.resamples)
-            kept = sorted(tokens[condition]) or sorted(meta[q]["full_tokens"] for q in common)
+            kept = sorted(tokens[(q, condition)] for q in common if (q, condition) in tokens) \
+                or sorted(meta[q]["full_tokens"] for q in common)
             print(f"   {condition:9s} {mean:.3f} [{low:.3f}, {high:.3f}]     {kept[len(kept) // 2]:>18d}  "
                   f"{unparsed[(reader, condition)]}")
         for a, b in PAIRS:
