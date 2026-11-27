@@ -13,7 +13,7 @@ import random
 import statistics
 from pathlib import Path
 
-from integrations.memoryarena.memory import CONDITIONS
+from integrations.memoryarena.memory import CONDITIONS, HEAD_CONDITIONS
 from integrations.memoryarena.score import PAIRS, cost
 
 
@@ -60,7 +60,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--results", type=Path, required=True)
     parser.add_argument("--usage", type=Path, default=None)
-    parser.add_argument("--conditions", default=",".join(CONDITIONS))
+    parser.add_argument("--conditions", default=",".join(CONDITIONS + HEAD_CONDITIONS))
     parser.add_argument("--resamples", type=int, default=20000)
     args = parser.parse_args()
     rows = [json.loads(line) for line in open(args.results, encoding="utf-8")]

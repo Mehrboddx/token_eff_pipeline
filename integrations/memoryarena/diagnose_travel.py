@@ -22,6 +22,10 @@ from integrations.memoryarena import upstream
 from integrations.memoryarena.memory import BUDGET, CompressedMemory, count_tokens, memory_context, readable
 
 
+TABLE_HEADER = re.compile(r"^\s*(NAME\s+price|Name\s+Average Cost|Flight Number\s+Price|Name\s+Latitude)", re.I)
+TABLE_ROW = re.compile(r"\S\s{2,}\S.*\s{2,}\S")  # columns separated by wide gaps
+
+
 def needed_items(slot: str, value: str) -> list[str]:
     value = (value or "").strip()
     if not value or value == "-":
@@ -64,9 +68,10 @@ def main() -> None:
     groups = {g["id"]: g for g in (up.convert_row(json.loads(line)) for line in open(args.data, encoding="utf-8"))}
     rows = [r for r in map(json.loads, open(args.results, encoding="utf-8")) if r.get("base_entry")]
 
-    replay = ["cpc", "random", "bm25", "long_context"]
+    replay = ["cpc", "random", "cpc_head", "random_head", "bm25", "long_context"]
     found = defaultdict(lambda: [0, 0])  # (scope, who) -> [present, total]
-    budget_use = {s: Counter() for s in ("cpc", "random")}
+    budget_use = {s: Counter() for s in ("cpc", "random", "cpc_head", "random_head")}
+    tables = {s: Counter() for s in budget_use}  # table rows and header rows kept
     slot_ok = defaultdict(lambda: [0, 0])  # (condition, shown?) -> [correct, total]
     for row in rows:
         group = groups[row["group"]]
@@ -81,8 +86,9 @@ def main() -> None:
             plan_text = "\n".join(plans)
             contexts = {"shown in run": memory_context(run_round.get("memory_shown") or "")}
             for selector in replay:
-                if selector in ("cpc", "random"):
-                    memory = CompressedMemory(selector, args.compress_url, args.budget)
+                if selector in ("cpc", "random", "cpc_head", "random_head"):
+                    memory = CompressedMemory(selector.split("_")[0], args.compress_url, args.budget,
+                                              headings=selector.endswith("_head"), note=selector.endswith("_head"))
                 elif selector == "bm25":
                     memory = up.RAGMemorySystem(retrieval_method="bm25")
                 else:
@@ -92,8 +98,10 @@ def main() -> None:
                 contexts[selector] = memory_context(memory.wrap_user_prompt(item["query"]))
             plan_lines = {line.strip() for text in plans for line in text.splitlines() if line.strip()}
             query_lines = {line.strip() for g_item in group["questions"][:i + 1] for line in g_item["query"].splitlines()}
-            for selector in ("cpc", "random"):
+            for selector in budget_use:
                 budget_use[selector].update(classify(contexts[selector], plan_lines, query_lines))
+                for line in contexts[selector].splitlines():
+                    tables[selector]["headers" if TABLE_HEADER.search(line) else "rows" if TABLE_ROW.search(line) else "-"] += 1
 
             own = up.parse_all_plans(run_round["plan"], [item])[0]["result"]
             parsed = up.parse_plan_text(own)
@@ -130,7 +138,10 @@ def main() -> None:
     print("\n== where the budget goes (tokens kept, replay)")
     for selector, use in budget_use.items():
         total = sum(use.values()) or 1
-        print(f"   {selector:<7} " + "  ".join(f"{k} {use[k] / total:.2f}" for k in ("plans", "queries", "other")))
+        print(f"   {selector:<12} " + "  ".join(f"{k} {use[k] / total:.2f}" for k in ("plans", "queries", "other")))
+    print("\n== table lines kept (replay): data rows, and header rows that name their columns")
+    for selector, counts in tables.items():
+        print(f"   {selector:<12} rows {counts['rows']:>5}  headers {counts['headers']:>4}")
     print("\n== slot right in the run, by whether its value was in the memory shown")
     for (condition, scope, shown), (ok, n) in sorted(slot_ok.items()):
         print(f"   {condition:<13} {scope:<30} shown={str(shown):<5} {ok}/{n} = {ok / n:.2f}")

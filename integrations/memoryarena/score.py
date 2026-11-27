@@ -17,7 +17,8 @@ from pathlib import Path
 
 from integrations.memoryarena.memory import CONDITIONS
 
-PAIRS = [("cpc", "random"), ("cpc", "bm25"), ("cpc", "long_context"), ("cpc", "none"),
+PAIRS = [("cpc_head", "random_head"), ("cpc_head", "cpc"), ("random_head", "random"), ("cpc_head", "long_context"),
+         ("cpc_head", "none"), ("cpc", "random"), ("cpc", "bm25"), ("cpc", "long_context"), ("cpc", "none"),
          ("random", "none"), ("bm25", "none"), ("long_context", "none")]
 PRICES = {"vertex_ai/gemini-3.5-flash-lite": (0.30, 2.50),
           "vertex_ai/gemini-3.6-flash": (0.75, 3.75)}  # introductory until 31 Dec 2026

@@ -55,6 +55,25 @@ class TestMemory(unittest.TestCase):
         self.assertTrue(wrapped.endswith("User: next problem"))
         self.assertEqual(mem.last["units_kept"], 3)
 
+    def test_head_conditions_send_headings_and_mark_excerpts(self):
+        replies = iter([{"text": "kept line", "units_in": 9, "units_kept": 3}, {"text": "all", "units_in": 4, "units_kept": 4}])
+        sent = []
+
+        def fake_urlopen(request, timeout):
+            sent.append(json.loads(request.data))
+            return Reply(json.dumps(next(replies)).encode())
+
+        mem = memory.make_memory("cpc_head", compress_url="http://svc")
+        mem.add_chunk("a")
+        with mock.patch.object(memory.urllib.request, "urlopen", fake_urlopen):
+            cut = memory.memory_context(mem.wrap_user_prompt("q1"))
+            whole = memory.memory_context(mem.wrap_user_prompt("q2"))
+        self.assertTrue(sent[0]["headings"])
+        self.assertNotIn("selector", sent[0])
+        self.assertEqual(cut, memory.EXCERPT_NOTE + "\nkept line")
+        self.assertEqual(whole, "all")  # nothing dropped: no note
+        self.assertEqual(memory.make_memory("random_head", compress_url="u").selector, "random")
+
     def test_cpc_sends_no_selector(self):
         mem = memory.CompressedMemory("cpc", "http://svc")
         mem.add_chunk("a")

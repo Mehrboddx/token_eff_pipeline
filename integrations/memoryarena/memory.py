@@ -21,6 +21,7 @@ import zlib
 from functools import lru_cache
 
 CONDITIONS = ("none", "long_context", "bm25", "random", "cpc")
+HEAD_CONDITIONS = ("random_head", "cpc_head")  # cpc / random with headings and the excerpt note
 BUDGET = 3 * 2048
 
 
@@ -91,14 +92,25 @@ class NoMemory:
         return wrap("", prompt)
 
 
-class CompressedMemory:
-    """Past sessions, cut to a token budget by the compressor service (CPC or random lines)."""
+EXCERPT_NOTE = "(Excerpt: only some lines of the earlier sessions are kept here; anything not shown is not in this memory.)"
 
-    def __init__(self, selector: str, url: str, budget: int = BUDGET, timeout: int = 3600):
+
+class CompressedMemory:
+    """Past sessions, cut to a token budget by the compressor service (CPC or random lines).
+
+    headings: each kept line brings its entry's first line and the first line of its
+    indented block (a table's header row, a plan's title), so kept lines stay readable.
+    note: when lines were dropped, the memory block opens with EXCERPT_NOTE, so the agent
+    knows the memory is partial."""
+
+    def __init__(self, selector: str, url: str, budget: int = BUDGET, timeout: int = 3600,
+                 headings: bool = False, note: bool = False):
         self.selector = selector
         self.url = url.rstrip("/")
         self.budget = budget
         self.timeout = timeout
+        self.headings = headings
+        self.note = note
         self.chunks: list[str] = []
         self.last: dict = {}
 
@@ -113,10 +125,14 @@ class CompressedMemory:
         payload = {"entries": entries, "query": prompt, "dedupe": False}
         if self.selector == "random":
             payload.update(selector="random", seed=zlib.crc32(prompt.encode()))
+        if self.headings:
+            payload["headings"] = True
         budget = self.budget
         for _ in range(4):  # the service counts in cl100k and adds step labels: refit until it fits
             result = self._post({**payload, "budget": budget})
             text = result.get("text") or ""
+            if self.note and result.get("units_kept") is not None and result["units_kept"] < (result.get("units_in") or 0):
+                text = f"{EXCERPT_NOTE}\n{text}"
             over = count_tokens(text) - self.budget
             if over <= 0:
                 break
@@ -139,6 +155,8 @@ def make_memory(condition: str, upstream=None, compress_url: str = "", budget: i
         return NoMemory()
     if condition in ("cpc", "random"):
         return CompressedMemory(condition, compress_url, budget)
+    if condition in ("cpc_head", "random_head"):  # with headings and the excerpt note
+        return CompressedMemory(condition.split("_")[0], compress_url, budget, headings=True, note=True)
     if condition == "long_context":
         return upstream.LongContextMemorySystem()
     if condition == "bm25":

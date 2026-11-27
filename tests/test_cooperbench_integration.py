@@ -50,6 +50,44 @@ def fake_compressor():
     return compressor
 
 
+class TestHeadings(unittest.TestCase):
+    ENTRY = {"role": "tool", "text": "\n".join([
+        "name: Eric traveler record here",
+        "result:",
+        "    NAME price room type city columns",
+        "    Cozy Loft 120 private room Rockford",
+        "    Big House 300 entire home Rockford",
+        "final_plan:",
+        "  === Eric's Plan === for the trip",
+        "  Accommodation: Cozy Loft in Rockford tonight",
+    ])}
+
+    def test_block_and_entry_headings(self):
+        from integrations.cooperbench.compress_server import unit_headings, units_with_indents
+
+        units, indents = units_with_indents([self.ENTRY], count)
+        texts = [unit.text.strip().split("\n")[0] for unit in units]
+        heads = unit_headings(units, indents)
+        row = texts.index("Big House 300 entire home Rockford")
+        self.assertEqual({texts[i] for i in heads[units[row].id]},
+                         {"name: Eric traveler record here", "NAME price room type city columns"})
+        plan_line = texts.index("Accommodation: Cozy Loft in Rockford tonight")
+        self.assertIn("=== Eric's Plan === for the trip", {texts[i] for i in heads[units[plan_line].id]})
+
+    def test_service_adds_headings_within_budget(self):
+        compressor = fake_compressor()
+        request = {"entries": [self.ENTRY], "query": "House", "budget": 22, "dedupe": False}
+        plain = compressor.compress(request)
+        self.assertNotIn("NAME price", plain["text"])
+        headed = compressor.compress({**request, "headings": True})
+        self.assertIn("Big House 300", headed["text"])
+        self.assertIn("NAME price room type", headed["text"])
+        self.assertIn("name: Eric", headed["text"])
+        self.assertLessEqual(count(headed["text"]), 22)
+        tight = compressor.compress({**request, "budget": 10, "headings": True})  # no room for headings
+        self.assertLessEqual(count(tight["text"]), 10)
+
+
 class TestUnits(unittest.TestCase):
     def test_lines_become_units_and_keep_their_entry(self):
         entries = [

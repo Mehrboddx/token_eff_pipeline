@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from integrations.memoryarena import llm_shim, upstream
-from integrations.memoryarena.memory import BUDGET, CONDITIONS, count_tokens, make_memory, memory_context
+from integrations.memoryarena.memory import BUDGET, CONDITIONS, HEAD_CONDITIONS, count_tokens, make_memory, memory_context
 
 
 def shared_tools(up) -> None:
@@ -127,7 +127,7 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--usage", type=Path, required=True)
     parser.add_argument("--repo", default=None)
-    parser.add_argument("--conditions", default=",".join(CONDITIONS))
+    parser.add_argument("--conditions", default=",".join(CONDITIONS + HEAD_CONDITIONS))
     parser.add_argument("--groups", default="", help="comma-separated group ids")
     parser.add_argument("--sample", type=int, default=0, help="N groups drawn with --seed (if no --groups)")
     parser.add_argument("--seed", type=int, default=0)
