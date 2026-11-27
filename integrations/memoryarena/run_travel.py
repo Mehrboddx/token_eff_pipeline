@@ -78,9 +78,11 @@ def run_group(group: dict, condition: str, up, args) -> dict:
     base = group["base_person"]
     base_plan = up.format_person_plan(base["name"], base["daily_plans"])
     accumulated = base_plan
+    base_entry = None
     if memory is not None:
-        add(json.dumps({"name": base["name"], "query": base["query"], "is_base_person": True,
-                        "final_plan": base_plan}, ensure_ascii=False))
+        base_entry = json.dumps({"name": base["name"], "query": base["query"], "is_base_person": True,
+                                 "final_plan": base_plan}, ensure_ascii=False)
+        add(base_entry)
     else:
         agent.set_base_person(base["name"], base["query"], base_plan)
 
@@ -107,10 +109,16 @@ def run_group(group: dict, condition: str, up, args) -> dict:
                        "memory_raw_tokens": count_tokens("\n".join(added)), "compress": compress,
                        "plan": plan, "seconds": round(time.time() - start, 1)})
         if memory is not None:
-            add(agent.build_memory_entry(task=item["query"], action=plan,
-                                         observation={"final": plan, "judgement": None}, reward=None))
-    return {"group": group["id"], "condition": condition, "n": len(queries), "rounds": rounds,
-            **score_group(up, group, all_results[-1])}
+            entry = agent.build_memory_entry(task=item["query"], action=plan,
+                                             observation={"final": plan, "judgement": None}, reward=None)
+            add(entry)
+            if getattr(args, "log_memory", False):
+                rounds[-1].update(memory_shown=context, memory_entry=entry)
+    row = {"group": group["id"], "condition": condition, "n": len(queries), "rounds": rounds,
+           **score_group(up, group, all_results[-1])}
+    if getattr(args, "log_memory", False):
+        row["base_entry"] = base_entry
+    return row
 
 
 def main() -> None:
@@ -129,6 +137,8 @@ def main() -> None:
     parser.add_argument("--compress-url", default="http://127.0.0.1:8765")
     parser.add_argument("--agent-model", default="vertex_ai/gemini-3.5-flash-lite")
     parser.add_argument("--agent-reasoning", default="low")
+    parser.add_argument("--log-memory", action="store_true",
+                        help="keep each traveler's memory entry and the memory shown (for diagnose_travel)")
     args = parser.parse_args()
 
     up = upstream.load_travel(args.repo)

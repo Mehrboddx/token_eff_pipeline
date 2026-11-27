@@ -80,6 +80,10 @@ case "${1:-}" in
     shift; runner "$VENV/bin/python" -m integrations.memoryarena.run_travel --data "$R/data/group_travel_planner.jsonl" \
       --out "$R/travel/results.jsonl" --usage "$R/travel/usage.jsonl" "$@"
     ;;
+  diagnose-travel)  # on runs made with run-travel --log-memory; needs the compressor service
+    shift; runner "$VENV/bin/python" -m integrations.memoryarena.diagnose_travel \
+      --data "$R/data/group_travel_planner.jsonl" "$@"
+    ;;
   score-travel)
     shift; runner "$VENV/bin/python" -m integrations.memoryarena.score_travel --results "$R/travel/results.jsonl" \
       --usage "$R/travel/usage.jsonl" "$@"
