@@ -81,11 +81,14 @@ def main():
                 mask[k, : len(s)] = 1
             input_ids, mask = input_ids.cuda(), mask.cuda()
             with torch.no_grad():
-                logits = model(input_ids=input_ids, attention_mask=mask).logits.float()
-            logp = torch.log_softmax(logits[:, :-1], dim=-1).gather(-1, input_ids[:, 1:, None])[..., 0]
-            for k, i in enumerate(ids):
-                s, e = starts[k] - 1, len(seqs[k]) - 1  # positions predicting the question tokens
-                result[str(i)] = round(float(logp[k, s:e].mean()), 5)
+                # The LM head only at the positions that predict question tokens: the full
+                # [batch, length, vocabulary] logits are what fills the GPU otherwise.
+                hidden = model.model(input_ids=input_ids, attention_mask=mask).last_hidden_state
+                for k, i in enumerate(ids):
+                    s, e = starts[k] - 1, len(seqs[k]) - 1  # positions predicting the question tokens
+                    logits = model.lm_head(hidden[k, s:e]).float()
+                    logp = torch.log_softmax(logits, dim=-1).gather(-1, input_ids[k, s + 1 : e + 1, None])[..., 0]
+                    result[str(i)] = round(float(logp.mean()), 5)
         out.write(json.dumps({"question_id": row["question_id"], "upr": result}) + "\n")
         out.flush()
         count += 1
