@@ -92,8 +92,8 @@ class TestReadable(unittest.TestCase):
             "final_plan": "=== Eric's Plan ===\nDay 1:"})
         text = memory.readable(chunk)
         self.assertIn("name: Eric", text)
-        self.assertIn("\n          Cozy Loft  120\n", text)  # a table row is its own line
-        self.assertIn("final_plan:\n  === Eric's Plan ===\n  Day 1:", text)
+        self.assertIn("\n          | Cozy Loft  120\n", text)  # a table row is its own line, in the value's block
+        self.assertIn("final_plan:\n  | === Eric's Plan ===\n  | Day 1:", text)
         for other in ("## Task: t\n## solution: 4\n", "Initial result: Empty\n", "42", ""):
             self.assertEqual(memory.readable(other), other)
 

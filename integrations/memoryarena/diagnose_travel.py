@@ -22,7 +22,7 @@ from integrations.memoryarena import upstream
 from integrations.memoryarena.memory import BUDGET, CompressedMemory, count_tokens, memory_context, readable
 
 
-TABLE_HEADER = re.compile(r"^\s*(NAME\s+price|Name\s+Average Cost|Flight Number\s+Price|Name\s+Latitude)", re.I)
+TABLE_HEADER = re.compile(r"^\s*(\|\s*)?(NAME\s+price|Name\s+Average Cost|Flight Number\s+Price|Name\s+Latitude)", re.I)
 TABLE_ROW = re.compile(r"\S\s{2,}\S.*\s{2,}\S")  # columns separated by wide gaps
 
 
@@ -47,6 +47,8 @@ def classify(context: str, plan_lines: set, query_lines: set) -> Counter:
     tokens = Counter()
     for line in context.splitlines():
         text = line.strip()
+        if text.startswith("| "):  # a line of a multi-line value (memory.readable)
+            text = text[2:].strip()
         if not text or text.startswith("[step "):
             continue
         kind = "plans" if text in plan_lines else "queries" if text in query_lines else "other"

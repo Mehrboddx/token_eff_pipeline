@@ -48,8 +48,9 @@ def memory_context(wrapped: str) -> str:
 
 
 def readable(chunk: str) -> str:
-    """A JSON chunk laid out one field per line, with string values on their own lines,
-    so line-based units follow its structure; any other chunk is returned unchanged.
+    """A JSON chunk laid out one field per line, with multi-line string values as "| "
+    blocks under their key, so line-based units (and headings) follow its structure;
+    any other chunk is returned unchanged.
     (Travel memory entries are one-line JSON holding whole tool results.)"""
     try:
         value = json.loads(chunk)
@@ -76,7 +77,9 @@ def readable(chunk: str) -> str:
                 else:
                     lines.append(f"{pad}- {child}")
         elif isinstance(item, str):
-            lines.extend(pad + line for line in item.splitlines())
+            # "| " fixes where each line of the value starts, so the value is one indented block
+            # whatever its own leading spaces (pandas right-aligns a table's first column).
+            lines.extend(pad + "| " + line for line in item.splitlines())
         else:
             lines.append(f"{pad}{item}")
 
