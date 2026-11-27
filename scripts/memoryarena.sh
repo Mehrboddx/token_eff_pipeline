@@ -8,6 +8,9 @@
 #   scripts/memoryarena.sh setup          # clone MemoryArena (pinned) and fetch the data
 #   scripts/memoryarena.sh run [args]     # -> $RUN_DIR/results.jsonl, usage.jsonl
 #   scripts/memoryarena.sh score [args]
+#   scripts/memoryarena.sh setup-travel   # travel data, pandas/datasets, the flights table (Google Drive)
+#   scripts/memoryarena.sh run-travel [args]    # -> $RUN_DIR/travel/results.jsonl, usage.jsonl
+#   scripts/memoryarena.sh score-travel [args]
 #
 # LLM access as in scripts/hscbench.sh (Google credentials at $GCP_CREDENTIALS).
 set -euo pipefail
@@ -59,7 +62,29 @@ case "${1:-}" in
     shift; runner "$VENV/bin/python" -m integrations.memoryarena.score --results "$R/results.jsonl" \
       --usage "$R/usage.jsonl" "$@"
     ;;
+  setup-travel)
+    mkdir -p "$R/data" "$R/travel"
+    curl -sfL "$HF/group_travel_planner/data.jsonl" -o "$R/data/group_travel_planner.jsonl"
+    runner "$VENV/bin/pip" install -q pandas datasets tqdm gdown
+    FLIGHTS="$MA_DIR/env/env_systems/travel_planner_env/database/flights"
+    if [[ ! -s "$FLIGHTS/clean_Flights_2022.csv" ]]; then
+      # the folder their setup_travel.md links to; it holds clean_Flights_2022.csv
+      runner "$VENV/bin/gdown" -q --folder "https://drive.google.com/drive/folders/1fHBg6Ro4bSbTBgxeQZ6piYNtmqy8a_kK" \
+        -O "$R/travel/flights_download"
+      mkdir -p "$FLIGHTS"
+      find "$R/travel/flights_download" -name clean_Flights_2022.csv -exec mv {} "$FLIGHTS/" \;
+    fi
+    ls -la "$FLIGHTS"; wc -l "$R/data/group_travel_planner.jsonl"
+    ;;
+  run-travel)
+    shift; runner "$VENV/bin/python" -m integrations.memoryarena.run_travel --data "$R/data/group_travel_planner.jsonl" \
+      --out "$R/travel/results.jsonl" --usage "$R/travel/usage.jsonl" "$@"
+    ;;
+  score-travel)
+    shift; runner "$VENV/bin/python" -m integrations.memoryarena.score_travel --results "$R/travel/results.jsonl" \
+      --usage "$R/travel/usage.jsonl" "$@"
+    ;;
   *)
-    sed -n '2,12p' "$0"; exit 1
+    sed -n '2,15p' "$0"; exit 1
     ;;
 esac

@@ -66,6 +66,19 @@ class TestMemory(unittest.TestCase):
         self.assertEqual(sent[0]["budget"], memory.BUDGET)
 
 
+class TestReadable(unittest.TestCase):
+    def test_json_entries_are_laid_out_by_field_and_others_untouched(self):
+        chunk = json.dumps({"name": "Eric", "scratchpad": [{"step_idx": 0, "tool_results": [
+            {"name": "AccommodationSearch", "result": "NAME  price\nCozy Loft  120\nBig House  300"}]}],
+            "final_plan": "=== Eric's Plan ===\nDay 1:"})
+        text = memory.readable(chunk)
+        self.assertIn("name: Eric", text)
+        self.assertIn("\n          Cozy Loft  120\n", text)  # a table row is its own line
+        self.assertIn("final_plan:\n  === Eric's Plan ===\n  Day 1:", text)
+        for other in ("## Task: t\n## solution: 4\n", "Initial result: Empty\n", "42", ""):
+            self.assertEqual(memory.readable(other), other)
+
+
 class TestShim(unittest.TestCase):
     def test_forwarding_reasoning_and_thought_signatures(self):
         calls = []
@@ -163,6 +176,71 @@ class TestLoop(unittest.TestCase):
         row = run_formal.run_task(task, "none", up, "u", types.SimpleNamespace(agent_max_tokens=1, compress_url="", budget=1))
         self.assertNotIn("q1", agents[0].prompts[1])
         self.assertEqual([s["memory_tokens"] for s in row["subtasks"]], [0, 0])
+
+
+class FakeTravelAgent:
+    def __init__(self, model_name, max_steps):
+        self.contexts, self.base, self.last_result = [], None, None
+
+    def reset(self): pass
+    def set_base_person(self, name, query, plan): self.base = plan
+
+    def prepare_for_person(self, name, round_idx, include_previous_plans, memory_context, memory_system):
+        self.contexts.append((name, include_previous_plans, memory_context))
+
+    def act(self, query):
+        name = self.contexts[-1][0]
+        self.last_result = types.SimpleNamespace(total_steps=3, success=True, error_message=None)
+        return f"=== {name}'s Plan ===\nDay 1:\nAccommodation: Loft, X"
+
+    def build_memory_entry(self, task, action, observation=None, reward=None):
+        return json.dumps({"query": task, "final_plan": action})
+
+
+def fake_travel_upstream(agents):
+    from integrations.memoryarena import run_travel  # noqa: F401
+
+    def parse_all_plans(text, queries):
+        return [{"person_idx": i, "name": q["name"], "result": text} for i, q in enumerate(queries, 1)]
+
+    evaluation = types.SimpleNamespace(
+        find_constraint_slots=lambda gt, base, gid, idx: {(1, "accommodation")},
+        check_slot_pass=lambda gt_plan, plan, day, slot: plan == "parsed",
+        check_person_full_pass=lambda gt_plan, plan: plan == "parsed")
+    return types.SimpleNamespace(
+        TravelPlannerAgent=lambda **kw: agents.append(FakeTravelAgent(**kw)) or agents[-1],
+        format_person_plan=lambda name, days: f"=== {name}'s Plan ===",
+        parse_all_plans=parse_all_plans, parse_plan_text=lambda text: "parsed" if "Loft" in text else None,
+        evaluation=evaluation, LongContextMemorySystem=FakeLongContext)
+
+
+class TestTravelLoop(unittest.TestCase):
+    GROUP = {"id": 7, "base_person": {"name": "Ann", "query": "I am Ann.", "daily_plans": []},
+             "questions": [{"round_idx": 1, "name": "Bob", "query": "I am Bob. Join Ann."},
+                           {"round_idx": 2, "name": "Cy", "query": "I am Cy. Stay with Bob."}],
+             "answers": [{"round_idx": 1, "daily_plans": []}, {"round_idx": 2, "daily_plans": []}]}
+    ARGS = types.SimpleNamespace(max_steps=30, compress_url="", budget=100)
+
+    def test_memory_holds_the_base_plan_and_earlier_travelers(self):
+        from integrations.memoryarena import run_travel
+
+        agents = []
+        row = run_travel.run_group(self.GROUP, "long_context", fake_travel_upstream(agents), self.ARGS)
+        (_, prev1, ctx1), (_, prev2, ctx2) = agents[0].contexts
+        self.assertFalse(prev1)  # with a memory system, no in-prompt plan history
+        self.assertIn("Ann's Plan", ctx1)
+        self.assertIn("Bob. Join Ann", ctx2)  # Bob's entry is in memory for Cy
+        self.assertEqual((row["ps"], row["sr"], row["sps"]), (1.0, 1.0, 1.0))
+        self.assertEqual([r["steps"] for r in row["rounds"]], [3, 3])
+
+    def test_none_keeps_their_in_prompt_history(self):
+        from integrations.memoryarena import run_travel
+
+        agents = []
+        row = run_travel.run_group(self.GROUP, "none", fake_travel_upstream(agents), self.ARGS)
+        self.assertEqual(agents[0].base, "=== Ann's Plan ===")
+        self.assertEqual([(prev, ctx) for _, prev, ctx in agents[0].contexts], [(True, None), (True, None)])
+        self.assertEqual([r["memory_tokens"] for r in row["rounds"]], [0, 0])
 
 
 class TestScore(unittest.TestCase):

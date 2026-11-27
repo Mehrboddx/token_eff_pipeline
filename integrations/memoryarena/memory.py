@@ -8,6 +8,8 @@
   lines that fit the budget, ranked by CPC + Provence against the new session's
   prompt, or at random. Memory that already fits comes back whole. The budget
   defaults to bm25's ceiling, 6,144 tokens (o200k, the tokenizer their systems use).
+  A JSON entry (travel planning stores one-line JSON) is laid out one field per line
+  first, so the units follow its fields; other entries go in unchanged.
 
 The output format is the benchmark's: <memory_context> ... </memory_context>, then
 "User: <prompt>".
@@ -44,6 +46,43 @@ def memory_context(wrapped: str) -> str:
     return wrapped.split("<memory_context>", 1)[1].split("</memory_context>", 1)[0].strip()
 
 
+def readable(chunk: str) -> str:
+    """A JSON chunk laid out one field per line, with string values on their own lines,
+    so line-based units follow its structure; any other chunk is returned unchanged.
+    (Travel memory entries are one-line JSON holding whole tool results.)"""
+    try:
+        value = json.loads(chunk)
+    except (TypeError, ValueError):
+        return chunk
+    if not isinstance(value, (dict, list)):
+        return chunk
+    lines: list[str] = []
+
+    def emit(item, indent: int) -> None:
+        pad = "  " * indent
+        if isinstance(item, dict):
+            for key, child in item.items():
+                if isinstance(child, (dict, list)) or (isinstance(child, str) and "\n" in child):
+                    lines.append(f"{pad}{key}:")
+                    emit(child, indent + 1)
+                else:
+                    lines.append(f"{pad}{key}: {child}")
+        elif isinstance(item, list):
+            for child in item:
+                if isinstance(child, (dict, list)) or (isinstance(child, str) and "\n" in child):
+                    lines.append(f"{pad}-")
+                    emit(child, indent + 1)
+                else:
+                    lines.append(f"{pad}- {child}")
+        elif isinstance(item, str):
+            lines.extend(pad + line for line in item.splitlines())
+        else:
+            lines.append(f"{pad}{item}")
+
+    emit(value, 0)
+    return "\n".join(lines)
+
+
 class NoMemory:
     def add_chunk(self, chunk: str) -> None:
         pass
@@ -64,7 +103,7 @@ class CompressedMemory:
         self.last: dict = {}
 
     def add_chunk(self, chunk: str) -> None:
-        self.chunks.append(chunk)
+        self.chunks.append(readable(chunk))
 
     def wrap_user_prompt(self, prompt: str) -> str:
         if not self.chunks:
