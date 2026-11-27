@@ -27,7 +27,13 @@ from pathlib import Path
 from core.console import utf8_console
 from core.selection import SelectionConfig, fuse_scores
 from core.units import role_label, session_header
-from eval.longmemeval import CompressionSettings, build_tokenwise, compress_question, load_items, seed_memory_from_haystack
+from eval.longmemeval import (
+    CompressionSettings,
+    build_tokenwise,
+    compress_question,
+    load_items,
+    seed_memory_from_haystack,
+)
 
 utf8_console()
 
@@ -43,15 +49,20 @@ def dump_question(item, tokenwise, budget, weight, text_top):
     def capture(query, token_budget, units, extra_queries=()):
         units = list(units)
         queries = [query, *dict.fromkeys(q for q in extra_queries if q and q != query)]
-        captured.update(units=units, queries=queries,
-                        primary=tokenwise.model.score_units(units, queries),
-                        secondary=tokenwise.secondary.score_units(units, queries))
+        captured.update(
+            units=units,
+            queries=queries,
+            primary=tokenwise.model.score_units(units, queries),
+            secondary=tokenwise.secondary.score_units(units, queries),
+        )
         return original(query, token_budget, units, extra_queries)
 
     tokenwise.compress_units = capture
     try:
         memory = seed_memory_from_haystack(item)
-        _, mode, _, _ = compress_question(item, tokenwise, CompressionSettings(token_budget=budget), seeded_memory=memory)
+        _, mode, _, _ = compress_question(
+            item, tokenwise, CompressionSettings(token_budget=budget), seeded_memory=memory
+        )
     finally:
         tokenwise.compress_units = original
     if mode != "compressed_history" or not captured.get("units"):
@@ -88,8 +99,12 @@ def main():
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
-    tokenwise = build_tokenwise(compressor="cpc", cpc_preset="mistral",
-                                selection=SelectionConfig(provence_weight=args.weight), score_cache=args.score_cache)
+    tokenwise = build_tokenwise(
+        compressor="cpc",
+        cpc_preset="mistral",
+        selection=SelectionConfig(provence_weight=args.weight),
+        score_cache=args.score_cache,
+    )
     assert tokenwise is not None
     tokenwise.model._factory = refuse_to_load
     tokenwise.secondary._factory = refuse_to_load

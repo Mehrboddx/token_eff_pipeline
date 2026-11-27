@@ -147,9 +147,20 @@ def main():
             by_type[qtype][cause] += 1
             if full_ok is not None:
                 paired_cause["full right" if full_ok else "full wrong"][cause] += 1
-        dump.append({"question_id": qid, "type": qtype, "question": item["question"], "reference": item["answer"],
-                     "predicted": verdict.get("predicted"), "correct": ok, "full_correct": full_ok,
-                     "cause": cause if not ok else None, "tokens": row.get("compressed_tokens"), **detail})
+        dump.append(
+            {
+                "question_id": qid,
+                "type": qtype,
+                "question": item["question"],
+                "reference": item["answer"],
+                "predicted": verdict.get("predicted"),
+                "correct": ok,
+                "full_correct": full_ok,
+                "cause": cause if not ok else None,
+                "tokens": row.get("compressed_tokens"),
+                **detail,
+            }
+        )
 
     n = len(ids)
     right = sum(1 for d in dump if d["correct"])
