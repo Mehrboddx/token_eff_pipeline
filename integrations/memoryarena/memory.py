@@ -22,6 +22,8 @@ from functools import lru_cache
 
 CONDITIONS = ("none", "long_context", "bm25", "random", "cpc")
 HEAD_CONDITIONS = ("random_head", "cpc_head")  # cpc / random with headings and the excerpt note
+SKELETON_CONDITIONS = ("cpc_skel", "random_skel")  # the skeleton (tasks, conclusions) first, traces selected
+TRACE_MARK = "\n## Tool Calls Info:"  # where a formal-reasoning entry's tool trace starts
 BUDGET = 3 * 2048
 
 
@@ -151,6 +153,55 @@ class CompressedMemory:
             return json.loads(reply.read())
 
 
+class SkeletonMemory(CompressedMemory):
+    """Agent memory as skeleton + flesh. The skeleton of each past episode is what was asked
+    and what the agent concluded; the flesh is its tool trace. CPC (or random) ranks all lines
+    alike by similarity to the new prompt, and long, symbol-heavy traces outrank the skeleton.
+    Here the skeleton has priority: kept whole when it fits the budget (else selected down to
+    it), and the tool traces fill what is left. In a deployed agent the split is the message
+    roles (agent outputs vs tool results); in MemoryArena's formal-reasoning entries it is the
+    "## Tool Calls Info" field."""
+
+    def __init__(self, selector: str, url: str, budget: int = BUDGET, timeout: int = 3600):
+        super().__init__(selector, url, budget, timeout)
+        self.traces: list[str] = []
+
+    def add_chunk(self, chunk: str) -> None:
+        skeleton, _, trace = chunk.partition(TRACE_MARK)
+        self.chunks.append(readable(skeleton.rstrip()))
+        self.traces.append(TRACE_MARK.strip() + trace if trace else "")
+
+    def _select(self, texts: list[str], prompt: str, budget: int) -> str:
+        entries = [{"role": "tool", "label": "memory", "step": i + 1, "text": t} for i, t in enumerate(texts) if t]
+        if not entries or budget <= 0:
+            return ""
+        payload = {"entries": entries, "query": prompt, "dedupe": False}
+        if self.selector == "random":
+            payload.update(selector="random", seed=zlib.crc32(prompt.encode()))
+        target = budget
+        for _ in range(4):  # the service counts in cl100k and adds labels: refit until it fits
+            text = self._post({**payload, "budget": target}).get("text") or ""
+            over = count_tokens(text) - budget
+            if over <= 0:
+                return text
+            target = max(1, target - over - 8)
+        return text
+
+    def wrap_user_prompt(self, prompt: str) -> str:
+        if not self.chunks:
+            return wrap("", prompt)
+        skeleton = "\n\n".join(f"[step {i + 1}]\n{c}" for i, c in enumerate(self.chunks))
+        if count_tokens(skeleton) > self.budget:
+            skeleton = self._select(self.chunks, prompt, self.budget - 16)
+        parts = ["Earlier tasks and your solutions:", skeleton]
+        rest = self.budget - count_tokens("\n".join(parts)) - 24
+        traces = self._select(self.traces, prompt, rest) if rest > 200 else ""
+        if traces:
+            parts += ["", "Excerpts of the tool calls behind them:", traces]
+        self.last = {"skeleton_tokens": count_tokens(skeleton), "trace_tokens": count_tokens(traces)}
+        return wrap("\n".join(parts), prompt)
+
+
 def make_memory(condition: str, upstream=None, compress_url: str = "", budget: int = BUDGET):
     """A fresh memory for one task (memory starts empty for every task, as in the benchmark).
     `upstream` is integrations.memoryarena.upstream.load() (MemoryArena's own classes)."""
@@ -160,6 +211,8 @@ def make_memory(condition: str, upstream=None, compress_url: str = "", budget: i
         return CompressedMemory(condition, compress_url, budget)
     if condition in ("cpc_head", "random_head"):  # with headings and the excerpt note
         return CompressedMemory(condition.split("_")[0], compress_url, budget, headings=True, note=True)
+    if condition in SKELETON_CONDITIONS:
+        return SkeletonMemory(condition.split("_")[0], compress_url, budget)
     if condition == "long_context":
         return upstream.LongContextMemorySystem()
     if condition == "bm25":
